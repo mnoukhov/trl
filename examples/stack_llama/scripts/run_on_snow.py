@@ -66,7 +66,7 @@ if __name__ == "__main__":
         "-n", "--gpus", default=1, type=int, help="number of gpus to use for experiment"
     )
     parser.add_argument(
-        "--gpu-mem", default=80, type=int, help="mem of gpus to use for experiment"
+        "--gpu-mem", default=32, type=int, help="mem of gpus to use for experiment"
     )
     parser.add_argument(
         "--no-wandb", action="store_true", help="disable wandb", default=False
