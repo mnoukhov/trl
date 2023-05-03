@@ -3,29 +3,29 @@ import copy
 import glob
 import os
 
+import evaluate_ppl
 import yaml
 from haven import haven_utils as hu
 from haven import haven_wizard as hw
 
-from scripts.training.train_text_generation import main
-
 
 def run_exp(exp_dict, savedir, args):
-    experiment_name = exp_dict.pop("name")
-    run_group = exp_dict.pop("group")
+    exp_name = exp_dict.pop("name")
 
     if not args.no_wandb:
         os.environ["WANDB_RUN_ID"] = os.path.basename(savedir)
-        os.environ["WANDB_RUN_GROUP"] = run_group
 
-    main(
-        config_path_or_config=exp_dict,
-        project_name="rl4lms",
-        experiment_name=experiment_name,
-        base_path_to_store_results=savedir,
-        entity_name="mila-language-drift",
-        log_to_wandb=(not args.no_wandb),
-    )
+    if exp_name.startswith("ppl"):
+        evaluate_ppl.main_dict(exp_dict)
+
+    # main(
+    #     config_path_or_config=exp_dict,
+    #     project_name="rl4lms",
+    #     experiment_name=experiment_name,
+    #     base_path_to_store_results=savedir,
+    #     entity_name="mila-language-drift",
+    #     log_to_wandb=(not args.no_wandb),
+    # )
 
 
 if __name__ == "__main__":
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-sb",
         "--savedir_base",
-        default="/home/toolkit/RL4LMs/results",
+        default="/home/toolkit/trl/results",
         help="Define the base directory where the experiments will be saved.",
     )
     parser.add_argument(
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-p",
         "--python_binary",
-        default="/home/toolkit/.conda/envs/rl4lms/bin/python",
+        default="/home/toolkit/.conda/envs/trl/bin/python",
         help="path to your python executable",
     )
     parser.add_argument(
@@ -71,40 +71,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-wandb", action="store_true", help="disable wandb", default=False
     )
-    parser.add_argument("--seeds", type=str, default="1")
     # parser.add_argument(
     #     "--exp-id", default=None, help="id used to resume an experiment"
     # )
 
     args, _ = parser.parse_known_args()
 
-    if args.seeds.isdigit():
-        seeds = range(int(args.seeds))
-    else:
-        assert "-" in args.seeds, "seeds must be int or range x-y"
-        start_str, end_str = args.seeds.split("-")
-        seeds = range(int(start_str), int(end_str))
+    with open(args.exp_group, "r") as fp:
+        exp_dict = yaml.safe_load(fp)
 
-    print(f"Running seeds {[x for x in seeds]}")
-    # match all config yamls
-    if args.exp_group.endswith("*"):
-        exp_yamls = glob.glob(args.exp_group)
-    else:
-        exp_yamls = [args.exp_group]
+    exp_dict["name"] = os.path.basename(args.exp_group)
 
-    exp_list = []
-    for exp_yaml_path in exp_yamls:
-        with open(exp_yaml_path, "r") as fp:
-            exp_dict = yaml.safe_load(fp)
-
-        print(os.path.basename(exp_yaml_path))
-
-        for seed in seeds:
-            seed_exp_dict = copy.deepcopy(exp_dict)
-            seed_exp_dict["alg"]["args"]["seed"] = seed
-            seed_exp_dict["name"] = os.path.basename(exp_yaml_path)
-            seed_exp_dict["group"] = hu.hash_dict(exp_dict)
-            exp_list.append(seed_exp_dict)
+    exp_list = [exp_dict]
 
     if args.job_scheduler == "toolkit":
         with open("/home/toolkit/wandb_api_key", "r") as f:
