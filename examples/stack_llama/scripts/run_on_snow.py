@@ -4,7 +4,9 @@ import glob
 import os
 
 import evaluate_ppl
+import human_eval
 import yaml
+from accelerate.commands import launch
 from haven import haven_utils as hu
 from haven import haven_wizard as hw
 
@@ -17,15 +19,19 @@ def run_exp(exp_dict, savedir, args):
 
     if exp_name.startswith("ppl"):
         evaluate_ppl.main_dict(exp_dict)
+    elif exp_name.startswith("humaneval"):
+        human_eval.main(exp_dict)
+        # accelerate_launch("human_eval.py", exp_dict)
 
-    # main(
-    #     config_path_or_config=exp_dict,
-    #     project_name="rl4lms",
-    #     experiment_name=experiment_name,
-    #     base_path_to_store_results=savedir,
-    #     entity_name="mila-language-drift",
-    #     log_to_wandb=(not args.no_wandb),
-    # )
+
+def accelerate_launch(training_file, training_args_dict):
+    parser = launch.launch_command_parser()
+    training_cmd_args = [training_file]
+    for key, val in training_args_dict.items():
+        training_cmd_args.append(f"--{key}")
+        training_cmd_args.append(str(val))
+    args = parser.parse_args(training_cmd_args)
+    launch.launch_command(args)
 
 
 if __name__ == "__main__":
