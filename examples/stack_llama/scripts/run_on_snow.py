@@ -13,20 +13,30 @@ from haven import haven_wizard as hw
 
 def run_exp(exp_dict, savedir, args):
     exp_name = exp_dict.pop("name")
+    print(args)
 
     if not args.no_wandb:
         os.environ["WANDB_RUN_ID"] = os.path.basename(savedir)
+        os.environ["WANDB_NAME"] = exp_name
 
     if exp_name.startswith("ppl"):
         evaluate_ppl.main_dict(exp_dict)
     elif exp_name.startswith("humaneval"):
-        human_eval.main(exp_dict)
+        # human_eval.main(exp_dict)
+        accelerate_launch("human_eval.py", exp_dict)
         # accelerate_launch("human_eval.py", exp_dict)
+    elif exp_name.startswith("rlhf"):
+        accelerate_launch("er_training.py", exp_dict, args.gpus)
 
 
-def accelerate_launch(training_file, training_args_dict):
+def accelerate_launch(training_file, training_args_dict, num_gpus=1):
     parser = launch.launch_command_parser()
-    training_cmd_args = [training_file]
+    training_cmd_args = []
+    if num_gpus > 1:
+        training_cmd_args.append("--multi_gpu")
+        training_cmd_args.extend(["--num_machines", "1"])
+        training_cmd_args.extend(["--num_processes", "8"])
+    training_cmd_args.append(training_file)
     for key, val in training_args_dict.items():
         training_cmd_args.append(f"--{key}")
         training_cmd_args.append(str(val))
@@ -72,7 +82,7 @@ if __name__ == "__main__":
         "-n", "--gpus", default=1, type=int, help="number of gpus to use for experiment"
     )
     parser.add_argument(
-        "--gpu-mem", default=32, type=int, help="mem of gpus to use for experiment"
+        "--gpu-mem", default=40, type=int, help="mem of gpus to use for experiment"
     )
     parser.add_argument(
         "--no-wandb", action="store_true", help="disable wandb", default=False
@@ -110,6 +120,7 @@ if __name__ == "__main__":
                 f"WANDB_API_KEY={wandb_api_key}",
                 "WANDB_RESUME=allow",
                 "WANDB__SERVICE_WAIT=300",
+                "WANDB_PROJECT=trl",
             ],
             "restartable": True,
             "resources": {
