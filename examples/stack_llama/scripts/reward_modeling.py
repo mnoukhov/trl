@@ -32,7 +32,9 @@ class ScriptArguments:
     These arguments vary depending on how many GPUs you have, what their capacity and features are, and what size model you want to train.
     """
 
-    local_rank: Optional[int] = field(default=-1, metadata={"help": "Used for multi-gpu"})
+    local_rank: Optional[int] = field(
+        default=-1, metadata={"help": "Used for multi-gpu"}
+    )
     resume_from_checkpoint: Optional[bool] = field(
         default=False,
         metadata={"help": "If you want to resume training where it left off."},
@@ -91,17 +93,19 @@ parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 
 # Load the human stack-exchange-paired dataset for tuning the reward model.
-train_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/reward", split="train")
+train_dataset = load_dataset(
+    "lvwerra/stack-exchange-paired", data_dir="data/reward", split="train"
+)
 if script_args.train_subset > 0:
     train_dataset = train_dataset.select(range(script_args.train_subset))
-eval_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/evaluation", split="train")
+eval_dataset = load_dataset(
+    "lvwerra/stack-exchange-paired", data_dir="data/evaluation", split="train"
+)
 if script_args.eval_subset > 0:
     eval_dataset = eval_dataset.select(range(script_args.eval_subset))
 # Define the training args. Needs to be done before the model is loaded if you are using deepspeed.
 model_name_split = script_args.model_name.split("/")[-1]
-output_name = (
-    f"{model_name_split}_peft_stack-exchange-paired_rmts__{script_args.train_subset}_{script_args.learning_rate}"
-)
+output_name = f"{model_name_split}_peft_stack-exchange-paired_rmts__{script_args.train_subset}_{script_args.learning_rate}"
 
 training_args = TrainingArguments(
     output_dir=output_name,
@@ -175,9 +179,15 @@ def preprocess_function(examples):
         "input_ids_k": [],
         "attention_mask_k": [],
     }
-    for question, response_j, response_k in zip(examples["question"], examples["response_j"], examples["response_k"]):
-        tokenized_j = tokenizer("Question: " + question + "\n\nAnswer: " + response_j, truncation=True)
-        tokenized_k = tokenizer("Question: " + question + "\n\nAnswer: " + response_k, truncation=True)
+    for question, response_j, response_k in zip(
+        examples["question"], examples["response_j"], examples["response_k"]
+    ):
+        tokenized_j = tokenizer(
+            "Question: " + question + "\n\nAnswer: " + response_j, truncation=True
+        )
+        tokenized_k = tokenizer(
+            "Question: " + question + "\n\nAnswer: " + response_k, truncation=True
+        )
 
         new_examples["input_ids_j"].append(tokenized_j["input_ids"])
         new_examples["attention_mask_j"].append(tokenized_j["attention_mask"])
@@ -189,15 +199,25 @@ def preprocess_function(examples):
 
 # preprocess the dataset and filter out QAs that are longer than script_args.max_length
 train_dataset = train_dataset.map(
-    preprocess_function, batched=True, num_proc=num_proc, remove_columns=original_columns
+    preprocess_function,
+    batched=True,
+    num_proc=num_proc,
+    remove_columns=original_columns,
 )
 train_dataset = train_dataset.filter(
-    lambda x: len(x["input_ids_j"]) <= script_args.max_length and len(x["input_ids_k"]) <= script_args.max_length
+    lambda x: len(x["input_ids_j"]) <= script_args.max_length
+    and len(x["input_ids_k"]) <= script_args.max_length
 )
 
-eval_dataset = eval_dataset.map(preprocess_function, batched=True, num_proc=num_proc, remove_columns=original_columns)
+eval_dataset = eval_dataset.map(
+    preprocess_function,
+    batched=True,
+    num_proc=num_proc,
+    remove_columns=original_columns,
+)
 eval_dataset = eval_dataset.filter(
-    lambda x: len(x["input_ids_j"]) <= script_args.max_length and len(x["input_ids_k"]) <= script_args.max_length
+    lambda x: len(x["input_ids_j"]) <= script_args.max_length
+    and len(x["input_ids_k"]) <= script_args.max_length
 )
 
 
@@ -266,8 +286,12 @@ def compute_metrics(eval_pred):
 class RewardTrainer(Trainer):
     # Define how to compute the reward loss. We use the InstructGPT pairwise logloss: https://arxiv.org/abs/2203.02155
     def compute_loss(self, model, inputs, return_outputs=False):
-        rewards_j = model(input_ids=inputs["input_ids_j"], attention_mask=inputs["attention_mask_j"])[0]
-        rewards_k = model(input_ids=inputs["input_ids_k"], attention_mask=inputs["attention_mask_k"])[0]
+        rewards_j = model(
+            input_ids=inputs["input_ids_j"], attention_mask=inputs["attention_mask_j"]
+        )[0]
+        rewards_k = model(
+            input_ids=inputs["input_ids_k"], attention_mask=inputs["attention_mask_k"]
+        )[0]
         loss = -nn.functional.logsigmoid(rewards_j - rewards_k).mean()
         if return_outputs:
             return loss, {"rewards_j": rewards_j, "rewards_k": rewards_k}
@@ -281,7 +305,9 @@ trainer = RewardTrainer(
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     compute_metrics=compute_metrics,
-    data_collator=RewardDataCollatorWithPadding(tokenizer=tokenizer, max_length=script_args.max_length),
+    data_collator=RewardDataCollatorWithPadding(
+        tokenizer=tokenizer, max_length=script_args.max_length
+    ),
 )
 
 trainer.train(script_args.resume_from_checkpoint)
