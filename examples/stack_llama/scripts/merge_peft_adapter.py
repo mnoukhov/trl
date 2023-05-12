@@ -4,10 +4,7 @@ from typing import Optional
 import peft
 import torch
 from peft import PeftConfig, PeftModel
-<<<<<<< HEAD
 from peft.utils import _get_submodules
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
-=======
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -15,7 +12,6 @@ from transformers import (
     HfArgumentParser,
     LlamaTokenizer,
 )
->>>>>>> nearly rl training working
 
 
 DEFAULT_PAD_TOKEN = "[PAD]"
