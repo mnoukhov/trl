@@ -1,7 +1,6 @@
 model_name: "/home/toolkit/huggingface/llama-7b-sft"
-tokenizer_name: "hf-internal-testing/llama-tokenizer" 
+tokenizer_name: "huggyllama/llama-7b" 
 reward_model_name: "/home/toolkit/huggingface/llama-7b-rm"
-log_with: "wandb"
 save_freq: 100
 batch_size: 8
 gradient_accumulation_steps: 8
@@ -9,3 +8,4 @@ batched_gen: True
 output_dir: results/
 early_stopping: True
 seed: 0
+total_steps: 8

@@ -25,6 +25,7 @@ from transformers import (
     AutoTokenizer,
     HfArgumentParser,
     LlamaTokenizer,
+    LlamaTokenizerFast,
     pipeline,
 )
 
@@ -97,6 +98,9 @@ class ScriptArguments:
         default="runs/", metadata={"help": "n steps to save the model"}
     )
     seed: Optional[int] = field(default=0, metadata={"help": "the seed"})
+    total_steps: Optional[int] = field(
+        default=20000, metadata={"help": "number of epochs"}
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -104,6 +108,7 @@ script_args: ScriptArguments = parser.parse_args_into_dataclasses()[0]
 reward_model_name = script_args.reward_model_name
 dataset_name = "lvwerra/stack-exchange-paired"
 config = PPOConfig(
+    steps=script_args.total_steps,
     model_name=script_args.model_name,
     learning_rate=script_args.learning_rate,
     log_with=script_args.log_with,
@@ -130,21 +135,21 @@ sent_kwargs = {
     "truncation": True,
 }
 
-tokenizer = LlamaTokenizer.from_pretrained(script_args.tokenizer_name)
+tokenizer = LlamaTokenizerFast.from_pretrained(script_args.tokenizer_name)
 # GPT-2 tokenizer has a pad token, but it is not eos_token by default. We need to set it to eos_token.
 # only for this model.
 
-if "llama" in script_args.tokenizer_name:
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
-else:
-    tokenizer.pad_token = tokenizer.eos_token
+# if "llama" in script_args.tokenizer_name:
+#     tokenizer.add_special_tokens(
+#         {
+#             "eos_token": DEFAULT_EOS_TOKEN,
+#             "bos_token": DEFAULT_BOS_TOKEN,
+#             "unk_token": DEFAULT_UNK_TOKEN,
+#             "pad_token": DEFAULT_PAD_TOKEN,
+#         }
+#     )
+# else:
+tokenizer.pad_token = tokenizer.eos_token
 
 
 # Below is an example function to build the dataset. In our case, we use the IMDB dataset
@@ -253,6 +258,7 @@ ppo_trainer = PPOTrainer(
 device = ppo_trainer.accelerator.device
 if ppo_trainer.accelerator.num_processes == 1:
     device = 0 if torch.cuda.is_available() else "cpu"  # to avoid a ` pipeline` bug
+print("here")
 sentiment_pipe = pipeline(
     "sentiment-analysis",
     model=reward_model_name,
@@ -260,7 +266,7 @@ sentiment_pipe = pipeline(
     model_kwargs={"load_in_8bit": True},
     tokenizer=tokenizer,
 )
-
+print("there")
 # We then define the arguments to pass to the `generate` function. These arguments
 # are passed to the `generate` function of the PPOTrainer, which is a wrapper around
 # the `generate` function of the trained model.
@@ -303,3 +309,6 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
 
     if script_args.save_freq and epoch and epoch % script_args.save_freq == 0:
         ppo_trainer.save_pretrained(script_args.output_dir + f"step_{epoch}")
+
+    if epoch >= script_args.total_num_epochs:
+        break
