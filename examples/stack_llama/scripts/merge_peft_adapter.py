@@ -9,8 +9,8 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
+    AutoTokenizer,
     HfArgumentParser,
-    LlamaTokenizer,
 )
 
 
@@ -51,14 +51,15 @@ assert (
 
 peft_config = PeftConfig.from_pretrained(script_args.adapter_model_name)
 if "rm" in script_args.adapter_model_name:
-    model_type = AutoModelForSequenceClassification
+    model = AutoModelForSequenceClassification.from_pretrained(
+        script_args.base_model_name, num_labels=1, torch_dtype=torch.bfloat16
+    )
 else:
-    model_type = AutoModelForCausalLM
+    model = AutoModelForCausalLM.from_pretrained(
+        script_args.base_model_name, return_dict=True, torch_dtype=torch.bfloat16
+    )
 
-model = model_type.from_pretrained(
-    script_args.base_model_name, return_dict=True, torch_dtype=torch.bfloat16
-)
-tokenizer = LlamaTokenizer.from_pretrained(script_args.base_model_name)
+tokenizer = AutoTokenizer.from_pretrained(script_args.base_model_name)
 config = AutoConfig.from_pretrained(script_args.base_model_name)
 architecture = config.architectures[0]
 if "Llama" in architecture:
@@ -87,6 +88,16 @@ for key in key_list:
         model.base_model._replace_module(parent, target_name, new_module, target)
 
 model = model.base_model.model
+
+# manually initialize score weight
+if "rm" in script_args.adapter_model_name:
+    peft_state_dict = torch.load(
+        "/home/toolkit/huggingface/hub/models--trl-lib--llama-7b-se-rm-peft/snapshots/7bf36fdf845841649aee34544de7df1376330eea/adapter_model.bin"
+    )
+    score_weight = peft_state_dict["base_model.model.base_model.model.score.weight"]
+    model.score = torch.nn.Linear(4096, 1)
+    with torch.no_grad():
+        model.score.weight.copy_(score_weight)
 
 model.save_pretrained(f"{script_args.output_name}")
 tokenizer.save_pretrained(f"{script_args.output_name}")
