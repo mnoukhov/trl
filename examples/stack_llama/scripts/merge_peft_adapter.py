@@ -95,7 +95,7 @@ if "rm" in script_args.adapter_model_name:
         "/home/toolkit/huggingface/hub/models--trl-lib--llama-7b-se-rm-peft/snapshots/7bf36fdf845841649aee34544de7df1376330eea/adapter_model.bin"
     )
     score_weight = peft_state_dict["base_model.model.base_model.model.score.weight"]
-    model.score = torch.nn.Linear(4096, 1)
+    model.score = torch.nn.Linear(4096, 1, bias=False)
     with torch.no_grad():
         model.score.weight.copy_(score_weight)
 

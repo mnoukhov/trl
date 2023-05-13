@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from datasets import load_dataset
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
@@ -14,6 +14,7 @@ from transformers import (
     HfArgumentParser,
     PreTrainedTokenizerBase,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 from transformers.utils import PaddingStrategy
@@ -56,6 +57,14 @@ class ScriptArguments:
             "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
         },
     )
+    tokenizer_name: Optional[str] = field(
+        default="gpt2",
+        metadata={
+            "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
+        },
+    )
+    just_eval: Optional[bool] = field(default=False)
+    load_in_8bit: Optional[bool] = field(default=False)
     bf16: Optional[bool] = field(
         default=True,
         metadata={
@@ -131,7 +140,9 @@ training_args = TrainingArguments(
     lr_scheduler_type=script_args.lr_scheduler_type,
 )
 # Load the value-head model and tokenizer.
-tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, use_auth_token=True)
+tokenizer = AutoTokenizer.from_pretrained(
+    script_args.tokenizer_name, use_auth_token=True
+)
 config = AutoConfig.from_pretrained(script_args.model_name)
 
 if "llama" in script_args.model_name:
@@ -156,9 +167,17 @@ peft_config = LoraConfig(
     lora_dropout=0.1,
 )
 
-model = AutoModelForSequenceClassification.from_pretrained(
-    script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
-)
+if script_args.load_in_8bit:
+    model = AutoModelForSequenceClassification.from_pretrained(
+        script_args.model_name,
+        num_labels=1,
+        load_in_8bit=True,
+        device_map="auto",
+    )
+else:
+    model = AutoModelForSequenceClassification.from_pretrained(
+        script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
+    )
 model = get_peft_model(model, peft_config)
 model.print_trainable_parameters()
 
@@ -198,16 +217,19 @@ def preprocess_function(examples):
 
 
 # preprocess the dataset and filter out QAs that are longer than script_args.max_length
-train_dataset = train_dataset.map(
-    preprocess_function,
-    batched=True,
-    num_proc=num_proc,
-    remove_columns=original_columns,
-)
-train_dataset = train_dataset.filter(
-    lambda x: len(x["input_ids_j"]) <= script_args.max_length
-    and len(x["input_ids_k"]) <= script_args.max_length
-)
+if not script_args.just_eval:
+    train_dataset = train_dataset.map(
+        preprocess_function,
+        batched=True,
+        num_proc=num_proc,
+        remove_columns=original_columns,
+    )
+    train_dataset = train_dataset.filter(
+        lambda x: len(x["input_ids_j"]) <= script_args.max_length
+        and len(x["input_ids_k"]) <= script_args.max_length
+    )
+else:
+    train_dataset = None
 
 eval_dataset = eval_dataset.map(
     preprocess_function,
@@ -310,7 +332,20 @@ trainer = RewardTrainer(
     ),
 )
 
-trainer.train(script_args.resume_from_checkpoint)
+
+# class EvaluateFirstStepCallback(TrainerCallback):
+#     def on_step_end(self, args, state, control, **kwargs):
+#         if state.global_step == 1:
+#             control.should_evaluate = True
+
+
+# trainer.add_callback(EvaluateFirstStepCallback())
+
+if script_args.just_eval:
+    eval_results = trainer.evaluate()
+    print(eval_results)
+else:
+    trainer.train(script_args.resume_from_checkpoint)
 
 print("Saving last checkpoint of the model")
 model.save_pretrained(output_name + "_peft_last_checkpoint")

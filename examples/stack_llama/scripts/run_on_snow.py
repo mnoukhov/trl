@@ -27,6 +27,8 @@ def run_exp(exp_dict, savedir, args):
         # accelerate_launch("human_eval.py", exp_dict)
     elif exp_name.startswith("rlhf"):
         accelerate_launch("er_training.py", exp_dict, args.gpus)
+    elif exp_name.startswith("rm"):
+        accelerate_launch("reward_modeling.py", exp_dict, args.gpus)
 
 
 def accelerate_launch(training_file, training_args_dict, num_gpus=1):
