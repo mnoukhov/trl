@@ -37,7 +37,7 @@ def accelerate_launch(training_file, training_args_dict, num_gpus=1):
     if num_gpus > 1:
         training_cmd_args.append("--multi_gpu")
         training_cmd_args.extend(["--num_machines", "1"])
-        training_cmd_args.extend(["--num_processes", "8"])
+        training_cmd_args.extend(["--num_processes", str(num_gpus)])
     training_cmd_args.append(training_file)
     for key, val in training_args_dict.items():
         training_cmd_args.append(f"--{key}")

@@ -1,0 +1,14 @@
+model_name: "/home/toolkit/huggingface/llama-7b-sft"
+tokenizer_name: "hf-internal-testing/llama-tokenizer" 
+reward_model_name: "/home/toolkit/huggingface/llama-7b-sft-rm-mine"
+log_with: "wandb"
+save_freq: 100
+batch_size: 8
+gradient_accumulation_steps: 8
+batched_gen: True
+output_dir: results/
+early_stopping: True
+seed: 0
+reset_freq: 500
+ema_decay: 0.995
+init_kl_coef: 0.005

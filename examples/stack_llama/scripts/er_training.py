@@ -12,16 +12,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
 from accelerate import Accelerator
 from datasets import load_dataset
-from peft import LoraConfig
+from peft import LoraConfig, PeftModel
+from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 from transformers import (
     Adafactor,
+    AutoModelForSequenceClassification,
     AutoTokenizer,
     HfArgumentParser,
     LlamaTokenizer,
@@ -47,6 +50,24 @@ class ScriptArguments:
     The name of the Casual LM model we wish to fine with PPO
     """
 
+    # EMA stuff
+
+    ema_decay: Optional[float] = field(
+        default=None, metadata={"help": "the ema decay rate"}
+    )
+    reset_freq: Optional[int] = field(
+        default=None, metadata={"help": "reset every n epochs"}
+    )
+
+    # extra stuff
+
+    init_kl_coef: Optional[float] = field(
+        default=0.005,
+        metadata={
+            "help": "Initial KL penalty coefficient (used for adaptive and linear control)"
+        },
+    )
+
     # NOTE: gpt2 models use Conv1D instead of Linear layers which are not yet supported in 8 bit mode
     # models like gpt-neo* models are more suitable.
     model_name: Optional[str] = field(default="", metadata={"help": "the model name"})
@@ -55,6 +76,9 @@ class ScriptArguments:
     )
     reward_model_name: Optional[str] = field(
         default="", metadata={"help": "the reward model name"}
+    )
+    reward_model_adapter_name: Optional[str] = field(
+        default=None, metadata={"help": "the reward model name"}
     )
     log_with: Optional[str] = field(
         default=None, metadata={"help": "use 'wandb' to log with wandb"}
@@ -120,6 +144,7 @@ config = PPOConfig(
     target_kl=script_args.target_kl,
     ppo_epochs=script_args.ppo_epochs,
     seed=script_args.seed,
+    init_kl_coef=script_args.init_kl_coef,
 )
 
 train_dataset = load_dataset(
@@ -135,21 +160,21 @@ sent_kwargs = {
     "truncation": True,
 }
 
-tokenizer = LlamaTokenizerFast.from_pretrained(script_args.tokenizer_name)
+tokenizer = LlamaTokenizer.from_pretrained(script_args.tokenizer_name)
 # GPT-2 tokenizer has a pad token, but it is not eos_token by default. We need to set it to eos_token.
 # only for this model.
 
-# if "llama" in script_args.tokenizer_name:
-#     tokenizer.add_special_tokens(
-#         {
-#             "eos_token": DEFAULT_EOS_TOKEN,
-#             "bos_token": DEFAULT_BOS_TOKEN,
-#             "unk_token": DEFAULT_UNK_TOKEN,
-#             "pad_token": DEFAULT_PAD_TOKEN,
-#         }
-#     )
-# else:
-tokenizer.pad_token = tokenizer.eos_token
+if "llama" in script_args.tokenizer_name:
+    tokenizer.add_special_tokens(
+        {
+            "eos_token": DEFAULT_EOS_TOKEN,
+            "bos_token": DEFAULT_BOS_TOKEN,
+            "unk_token": DEFAULT_UNK_TOKEN,
+            "pad_token": DEFAULT_PAD_TOKEN,
+        }
+    )
+else:
+    tokenizer.pad_token = tokenizer.eos_token
 
 
 # Below is an example function to build the dataset. In our case, we use the IMDB dataset
@@ -241,6 +266,17 @@ if script_args.adafactor:
         warmup_init=False,
         lr=config.learning_rate,
     )
+
+if script_args.reset_freq is not None:
+    ema = ExponentialMovingAverage(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        decay=script_args.ema_decay,
+        use_num_updates=False,
+    )
+    initial_state_dict = copy.deepcopy(ema.state_dict())
+else:
+    ema = None
+
 # We then build the PPOTrainer, passing the model, the reference model, the tokenizer
 ppo_trainer = PPOTrainer(
     config,
@@ -250,6 +286,7 @@ ppo_trainer = PPOTrainer(
     dataset=dataset,
     data_collator=collator,
     optimizer=optimizer,
+    ema_model=ema,
 )
 
 # We then build the sentiment analysis pipeline, passing the model name and the
@@ -258,15 +295,32 @@ ppo_trainer = PPOTrainer(
 device = ppo_trainer.accelerator.device
 if ppo_trainer.accelerator.num_processes == 1:
     device = 0 if torch.cuda.is_available() else "cpu"  # to avoid a ` pipeline` bug
-print("here")
-sentiment_pipe = pipeline(
-    "sentiment-analysis",
-    model=reward_model_name,
-    device_map={"": current_device},
-    model_kwargs={"load_in_8bit": True},
-    tokenizer=tokenizer,
-)
-print("there")
+
+if script_args.reward_model_adapter_name is not None:
+    reward_model_base = AutoModelForSequenceClassification.from_pretrained(
+        script_args.reward_model_name, num_labels=1, torch_dtype=torch.bfloat16
+    )
+
+    reward_model = PeftModel.from_pretrained(
+        reward_model_base, script_args.reward_model_adapter_name
+    )
+
+    sentiment_pipe = pipeline(
+        "sentiment-analysis",
+        model=reward_model,
+        # model=reward_model_name,
+        # device_map={"": current_device},
+        # model_kwargs={"load_in_8bit": True},
+        tokenizer=tokenizer,
+    )
+else:
+    sentiment_pipe = pipeline(
+        "sentiment-analysis",
+        model=reward_model_name,
+        device_map={"": current_device},
+        model_kwargs={"load_in_8bit": True},
+        tokenizer=tokenizer,
+    )
 # We then define the arguments to pass to the `generate` function. These arguments
 # are passed to the `generate` function of the PPOTrainer, which is a wrapper around
 # the `generate` function of the trained model.
@@ -310,5 +364,7 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     if script_args.save_freq and epoch and epoch % script_args.save_freq == 0:
         ppo_trainer.save_pretrained(script_args.output_dir + f"step_{epoch}")
 
-    if epoch >= script_args.total_num_epochs:
-        break
+    if script_args.reset_freq and epoch and epoch % script_args.reset_freq == 0:
+        ema.copy_to()
+        ema.load_state_dict(initial_state_dict)
+        ppo_trainer.accelerator.print("elastic reset")
