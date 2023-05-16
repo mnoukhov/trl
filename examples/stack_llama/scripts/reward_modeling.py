@@ -5,8 +5,9 @@ import evaluate
 import numpy as np
 import torch
 import torch.nn as nn
+from accelerate import Accelerator
 from datasets import load_dataset
-from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
 from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
@@ -51,6 +52,8 @@ class ScriptArguments:
     gradient_accumulation_steps: Optional[int] = field(default=1)
     learning_rate: Optional[float] = field(default=2e-5)
     weight_decay: Optional[int] = field(default=0.001)
+    adapter_model_name: Optional[str] = field(default=None)
+    merge_peft: Optional[bool] = field(default=False)
     model_name: Optional[str] = field(
         default="gpt2",
         metadata={
@@ -159,26 +162,35 @@ else:
     # required for gpt2
     tokenizer.pad_token = tokenizer.eos_token
 
-peft_config = LoraConfig(
-    task_type=TaskType.SEQ_CLS,
-    inference_mode=False,
-    r=8,
-    lora_alpha=32,
-    lora_dropout=0.1,
-)
-
 if script_args.load_in_8bit:
+    current_device = Accelerator().local_process_index
     model = AutoModelForSequenceClassification.from_pretrained(
         script_args.model_name,
         num_labels=1,
         load_in_8bit=True,
-        device_map="auto",
+        device_map={"": current_device},
     )
 else:
     model = AutoModelForSequenceClassification.from_pretrained(
         script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
     )
-model = get_peft_model(model, peft_config)
+
+if script_args.adapter_model_name is None:
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,
+        inference_mode=False,
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.1,
+    )
+
+    model = get_peft_model(model, peft_config)
+else:
+    model = PeftModel.from_pretrained(model, script_args.adapter_model_name)
+
+    if script_args.merge_peft:
+        model = model.merge_and_unload()
+
 model.print_trainable_parameters()
 
 # Need to do this for gpt2, because it doesn't have an official pad token.
@@ -342,10 +354,11 @@ trainer = RewardTrainer(
 # trainer.add_callback(EvaluateFirstStepCallback())
 
 if script_args.just_eval:
+    training_args.set_logging(report_to="none")
     eval_results = trainer.evaluate()
     print(eval_results)
 else:
     trainer.train(script_args.resume_from_checkpoint)
 
-print("Saving last checkpoint of the model")
-model.save_pretrained(output_name + "_peft_last_checkpoint")
+    print("Saving last checkpoint of the model")
+    model.save_pretrained(output_name + "_peft_last_checkpoint")

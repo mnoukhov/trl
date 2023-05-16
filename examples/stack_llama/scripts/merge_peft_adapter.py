@@ -77,27 +77,7 @@ if "Llama" in architecture:
 model = PeftModel.from_pretrained(model, script_args.adapter_model_name)
 model.eval()
 
-key_list = [
-    key for key, _ in model.base_model.model.named_modules() if "lora" not in key
-]
-for key in key_list:
-    parent, target, target_name = _get_submodules(model.base_model.model, key)
-    if isinstance(target, peft.tuners.lora.Linear):
-        bias = target.bias is not None
-        new_module = torch.nn.Linear(target.in_features, target.out_features, bias=bias)
-        model.base_model._replace_module(parent, target_name, new_module, target)
-
-model = model.base_model.model
-
-# manually initialize score weight
-if "rm" in script_args.adapter_model_name:
-    peft_state_dict = torch.load(
-        "/home/toolkit/huggingface/hub/models--trl-lib--llama-7b-se-rm-peft/snapshots/7bf36fdf845841649aee34544de7df1376330eea/adapter_model.bin"
-    )
-    score_weight = peft_state_dict["base_model.model.base_model.model.score.weight"]
-    model.score = torch.nn.Linear(4096, 1, bias=False)
-    with torch.no_grad():
-        model.score.weight.copy_(score_weight)
+model = model.merge_and_unload()
 
 model.save_pretrained(f"{script_args.output_name}")
 tokenizer.save_pretrained(f"{script_args.output_name}")

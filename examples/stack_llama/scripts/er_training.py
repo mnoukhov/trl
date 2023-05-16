@@ -62,7 +62,7 @@ class ScriptArguments:
     # extra stuff
 
     init_kl_coef: Optional[float] = field(
-        default=0.005,
+        default=0.2,
         metadata={
             "help": "Initial KL penalty coefficient (used for adaptive and linear control)"
         },

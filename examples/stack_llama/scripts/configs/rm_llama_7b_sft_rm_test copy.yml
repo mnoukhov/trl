@@ -1,0 +1,5 @@
+model_name: "llama-7b-sft"
+per_device_train_batch_size: 1
+max_steps: 8
+bf16: False
+eval_subset: 500

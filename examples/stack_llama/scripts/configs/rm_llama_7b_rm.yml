@@ -1,0 +1,2 @@
+model_name: "/home/toolkit/huggingface/llama-7b-rm"
+max_steps: 16

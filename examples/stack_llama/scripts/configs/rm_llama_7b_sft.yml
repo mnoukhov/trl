@@ -1,1 +1,2 @@
 model_name: "/home/toolkit/huggingface/llama-7b-sft"
+tokenizer_name: hf-internal-testing/llama-tokenizer
