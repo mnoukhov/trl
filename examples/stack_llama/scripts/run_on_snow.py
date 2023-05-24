@@ -29,6 +29,8 @@ def run_exp(exp_dict, savedir, args):
         accelerate_launch("er_training.py", exp_dict, args.gpus)
     elif exp_name.startswith("rm"):
         accelerate_launch("reward_modeling.py", exp_dict, args.gpus)
+    elif exp_name.startswith("sft"):
+        accelerate_launch("supervised_finetuning.py", exp_dict, args.gpus)
 
 
 def accelerate_launch(training_file, training_args_dict, num_gpus=1):
@@ -41,7 +43,8 @@ def accelerate_launch(training_file, training_args_dict, num_gpus=1):
     training_cmd_args.append(training_file)
     for key, val in training_args_dict.items():
         training_cmd_args.append(f"--{key}")
-        training_cmd_args.append(str(val))
+        if val != True:
+            training_cmd_args.append(str(val))
     args = parser.parse_args(training_cmd_args)
     launch.launch_command(args)
 
@@ -126,8 +129,8 @@ if __name__ == "__main__":
             ],
             "restartable": True,
             "resources": {
-                "cpu": 4 * args.gpus,
-                "mem": 48 * args.gpus,
+                "cpu": 2 * args.gpus,
+                "mem": 32 * args.gpus,
                 "gpu_mem": args.gpu_mem,
                 "gpu": args.gpus,
             },

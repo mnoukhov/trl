@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -68,6 +69,9 @@ class ScriptArguments:
         },
     )
 
+    adap_kl_ctrl: Optional[bool] = field(
+        default=True, metadata={"help": "Use adaptive KL control, otherwise linear"}
+    )
     # NOTE: gpt2 models use Conv1D instead of Linear layers which are not yet supported in 8 bit mode
     # models like gpt-neo* models are more suitable.
     model_name: Optional[str] = field(default="", metadata={"help": "the model name"})
@@ -121,10 +125,14 @@ class ScriptArguments:
     output_dir: Optional[str] = field(
         default="runs/", metadata={"help": "n steps to save the model"}
     )
+    load_dir: Optional[str] = field(
+        default=None, metadata={"help": "n steps to save the model"}
+    )
     seed: Optional[int] = field(default=0, metadata={"help": "the seed"})
     total_steps: Optional[int] = field(
         default=20000, metadata={"help": "number of epochs"}
     )
+    start_epoch: Optional[int] = field(default=0, metadata={"help": "number of epochs"})
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -145,6 +153,7 @@ config = PPOConfig(
     ppo_epochs=script_args.ppo_epochs,
     seed=script_args.seed,
     init_kl_coef=script_args.init_kl_coef,
+    adap_kl_ctrl=script_args.adap_kl_ctrl,
 )
 
 train_dataset = load_dataset(
@@ -243,19 +252,27 @@ set_seed(config.seed)
 # Now let's build the model, the reference model, and the tokenizer.
 current_device = Accelerator().local_process_index
 
-lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
-)
-model = AutoModelForCausalLMWithValueHead.from_pretrained(
-    config.model_name,
-    load_in_8bit=True,
-    device_map={"": current_device},
-    peft_config=lora_config,
-)
+if script_args.load_dir is not None:
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        script_args.load_dir,
+        load_in_8bit=True,
+        device_map={"": current_device},
+        is_trainable=True,
+    )
+else:
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        config.model_name,
+        load_in_8bit=True,
+        device_map={"": current_device},
+        peft_config=lora_config,
+    )
 
 optimizer = None
 if script_args.adafactor:
@@ -268,8 +285,9 @@ if script_args.adafactor:
     )
 
 if script_args.reset_freq is not None:
+    # use model.pretrained_model to exclude the value head params
     ema = ExponentialMovingAverage(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        filter(lambda p: p.requires_grad, model.pretrained_model.parameters()),
         decay=script_args.ema_decay,
         use_num_updates=False,
     )

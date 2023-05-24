@@ -5,6 +5,7 @@ import evaluate
 import torch
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 from datasets import load_dataset
+from peft import PeftConfig, PeftModel
 from perplexity import batched_perplexity, eval_perplexity, unbatched_perplexity
 from supervised_finetuning import (
     ConstantLengthDataset,
@@ -28,6 +29,7 @@ class ScriptArguments:
         default="/home/toolkit/huggingface/llama-7b-sft",
         metadata={"help": "the model path"},
     )
+    is_peft: Optional[bool] = field(default=False)
     tokenizer: Optional[str] = field(default="huggyllama/llama-7b")
     dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired")
     subset: Optional[str] = field(default="data/evaluation")
@@ -41,12 +43,21 @@ class ScriptArguments:
 
 
 def main(args):
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        load_in_8bit=args.bit8,
-        device_map="auto",
-    )
+    if args.is_peft:
+        config = PeftConfig.from_pretrained(args.model)
+        model = AutoModelForCausalLM.from_pretrained(
+            config.base_model_name_or_path,
+            load_in_8bit=True,
+            device_map={"": 0},
+        )
+        model = PeftModel.from_pretrained(model, args.model)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            trust_remote_code=True,
+            load_in_8bit=args.bit8,
+            device_map={"": 0},
+        )
 
     # config = AutoConfig.from_pretrained(args.model_path)
 
