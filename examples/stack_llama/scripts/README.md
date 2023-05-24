@@ -1,4 +1,14 @@
 # RLHF pipeline for the creation of StackLLaMa: a Stack exchange llama-7b model.
+
+## Reproducing Elastic Reset
+
+1. merge the trl-lib peft weights to create llama-sft
+2. run `reward_modelling.py` using configs/rm_llama_7b_sft.yml to create llama-sft-rm
+3. run `er_training.py` using configs/rlhf_er_decay0.995_reset260_coef0.02.yml to create the elastic reset rlhf llama 7b
+
+
+## Original Instructions
+
 There were three main steps to the training process:
 1. Supervised fine-tuning of the base llama-7b model to create llama-7b-se:
     - `torchrun --nnodes 1  --nproc_per_node 8 examples/stack_llama/scripts/supervised_finetuning.py --model_path=<LLAMA_MODEL_PATH> --streaming --no_gradient_checkpointing --learning_rate 1e-5 --max_steps 5000 --output_dir ./llama-se`

@@ -26,7 +26,7 @@ from transformers import (
 @dataclass
 class ScriptArguments:
     model: Optional[str] = field(
-        default="/home/toolkit/huggingface/llama-7b-sft",
+        default="llama-7b-sft",
         metadata={"help": "the model path"},
     )
     is_peft: Optional[bool] = field(default=False)

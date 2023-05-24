@@ -1,7 +1,0 @@
-model_name: "llama-7b-sft-rm"
-tokenizer_name: huggyllama/llama-7b
-per_device_train_batch_size: 1
-just_eval: True
-bf16: False
-eval_subset: 500
-just_eval: True

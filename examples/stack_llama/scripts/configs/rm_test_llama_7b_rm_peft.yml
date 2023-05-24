@@ -1,8 +1,0 @@
-model_name: "/home/toolkit/huggingface/llama-7b-sft"
-adapter_model_name: trl-lib/llama-7b-se-rm-peft
-tokenizer_name: hf-internal-testing/llama-tokenizer
-just_eval: True
-per_device_train_batch_size: 1
-bf16: False
-load_in_8bit: False
-eval_subset: 500
