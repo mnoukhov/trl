@@ -239,13 +239,8 @@ class PPOTrainer(BaseTrainer):
             )
         self.tokenizer = tokenizer
 
-        if dataset is not None and not (
-            isinstance(dataset, torch.utils.data.Dataset)
-            or isinstance(dataset, Dataset)
-        ):
-            raise ValueError(
-                "dataloader must be a torch.utils.data.Dataset or datasets.Dataset"
-            )
+        if dataset is not None and not (isinstance(dataset, torch.utils.data.Dataset) or isinstance(dataset, Dataset)):
+            raise ValueError("dataset must be a torch.utils.data.Dataset or datasets.Dataset")
         elif dataset is None:
             warnings.warn(
                 "No dataset is provided. Make sure to set config.batch_size to the correct value before training.",
@@ -257,9 +252,9 @@ class PPOTrainer(BaseTrainer):
             self.dataloader = self.prepare_dataloader(self.dataset, data_collator)
         elif self.dataset is None and self.accelerator.num_processes > 1:
             warnings.warn(
-                "No dataset is provided. In a multi-GPU setting, this will lead to an error. You should",
-                " prepare your dataloader yourself with `dataloader = ppo_trainer.accelerator.prepare(dataloader)`",
-                " and using `torch.utils.data.DataLoader`, or pass a dataset to the `PPOTrainer`. Please ",
+                "No dataset is provided. In a multi-GPU setting, this will lead to an error. You should"
+                " prepare your dataloader yourself with `dataloader = ppo_trainer.accelerator.prepare(dataloader)`"
+                " and using `torch.utils.data.DataLoader`, or pass a dataset to the `PPOTrainer`. Please "
                 " refer to the documentation for more details.",
                 UserWarning,
             )
@@ -318,8 +313,9 @@ class PPOTrainer(BaseTrainer):
         )
         if is_deepspeed_used:
             # 8 bit models are already set on the correct device
-            if not self.is_peft_model and not getattr(
-                self.ref_model.pretrained_model, "is_loaded_in_8bit", False
+            if not self.is_peft_model and not (
+                getattr(self.ref_model.pretrained_model, "is_loaded_in_8bit", False)
+                or getattr(self.ref_model.pretrained_model, "is_loaded_in_4bit", False)
             ):
                 # DS integration only allows for single model and as `ref_model` is only used for
                 # `KL devergence loss`,i.e, in eval model, just have it be on the respective device and
