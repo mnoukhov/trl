@@ -1,0 +1,4 @@
+model_name: "/home/toolkit/huggingface/llama-7b-sft-mine"
+tokenizer_name: huggyllama/llama-7b
+gradient_accumulation_steps: 2
+num_train_epochs: 2

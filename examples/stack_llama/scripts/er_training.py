@@ -129,9 +129,7 @@ class ScriptArguments:
         default=None, metadata={"help": "n steps to save the model"}
     )
     seed: Optional[int] = field(default=0, metadata={"help": "the seed"})
-    total_steps: Optional[int] = field(
-        default=20000, metadata={"help": "number of epochs"}
-    )
+    steps: Optional[int] = field(default=20000, metadata={"help": "number of epochs"})
     start_epoch: Optional[int] = field(default=0, metadata={"help": "number of epochs"})
 
 
@@ -140,7 +138,7 @@ script_args: ScriptArguments = parser.parse_args_into_dataclasses()[0]
 reward_model_name = script_args.reward_model_name
 dataset_name = "lvwerra/stack-exchange-paired"
 config = PPOConfig(
-    steps=script_args.total_steps,
+    steps=script_args.steps,
     model_name=script_args.model_name,
     learning_rate=script_args.learning_rate,
     log_with=script_args.log_with,
@@ -386,3 +384,6 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         ema.copy_to()
         ema.load_state_dict(initial_state_dict)
         ppo_trainer.accelerator.print("elastic reset")
+
+    if epoch >= config.total_ppo_epochs - 1:
+        break

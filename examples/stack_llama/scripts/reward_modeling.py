@@ -21,12 +21,6 @@ from transformers import (
 from transformers.utils import PaddingStrategy
 
 
-DEFAULT_PAD_TOKEN = "[PAD]"
-DEFAULT_EOS_TOKEN = "</s>"
-DEFAULT_BOS_TOKEN = "</s>"
-DEFAULT_UNK_TOKEN = "</s>"
-
-
 # Define and parse arguments.
 @dataclass
 class ScriptArguments:
@@ -147,20 +141,6 @@ tokenizer = AutoTokenizer.from_pretrained(
     script_args.tokenizer_name, use_auth_token=True
 )
 config = AutoConfig.from_pretrained(script_args.model_name)
-
-if "llama" in script_args.model_name:
-    # required for llama
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
-else:
-    # required for gpt2
-    tokenizer.pad_token = tokenizer.eos_token
 
 if script_args.load_in_8bit:
     current_device = Accelerator().local_process_index
@@ -345,13 +325,13 @@ trainer = RewardTrainer(
 )
 
 
-# class EvaluateFirstStepCallback(TrainerCallback):
-#     def on_step_end(self, args, state, control, **kwargs):
-#         if state.global_step == 1:
-#             control.should_evaluate = True
+class EvaluateFirstStepCallback(TrainerCallback):
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step == 1:
+            control.should_evaluate = True
 
 
-# trainer.add_callback(EvaluateFirstStepCallback())
+trainer.add_callback(EvaluateFirstStepCallback())
 
 if script_args.just_eval:
     training_args.set_logging(report_to="none")

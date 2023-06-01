@@ -61,17 +61,6 @@ else:
 
 tokenizer = AutoTokenizer.from_pretrained(script_args.base_model_name)
 config = AutoConfig.from_pretrained(script_args.base_model_name)
-architecture = config.architectures[0]
-if "Llama" in architecture:
-    print("Setting EOS, BOS, and UNK tokens for LLama tokenizer")
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
 
 # Load the Lora model
 model = PeftModel.from_pretrained(model, script_args.adapter_model_name)

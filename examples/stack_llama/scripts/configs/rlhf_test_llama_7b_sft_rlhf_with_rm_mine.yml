@@ -1,0 +1,12 @@
+model_name: "/home/toolkit/huggingface/llama-7b-sft-redo-rlhf"
+tokenizer_name: "huggyllama/llama-7b" 
+reward_model_name: "/home/toolkit/huggingface/llama-7b-sft-mine-rm-2epochs"
+save_freq: 100
+batch_size: 8
+gradient_accumulation_steps: 8
+batched_gen: True
+output_dir: results/
+early_stopping: True
+seed: 0
+log_with: "wandb"
+steps: 8

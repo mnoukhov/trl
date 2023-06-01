@@ -1,0 +1,5 @@
+model_name: /home/toolkit/huggingface/llama-7b-sft-redo
+tokenizer_name: huggyllama/llama-7b
+just_eval: True
+bf16: True
+load_in_8bit: False
