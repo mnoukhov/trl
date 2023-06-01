@@ -23,7 +23,7 @@ def run_exp(exp_dict, savedir, args):
         evaluate_ppl.main_dict(exp_dict)
     elif exp_name.startswith("humaneval"):
         # human_eval.main(exp_dict)
-        accelerate_launch("human_eval.py", exp_dict)
+        accelerate_launch("/home/toolkit/bigcode-evaluation-harness/main.py", exp_dict)
         # accelerate_launch("human_eval.py", exp_dict)
     elif exp_name.startswith("rlhf"):
         accelerate_launch("er_training.py", exp_dict, args.gpus)
@@ -43,7 +43,7 @@ def accelerate_launch(training_file, training_args_dict, num_gpus=1):
     training_cmd_args.append(training_file)
     for key, val in training_args_dict.items():
         training_cmd_args.append(f"--{key}")
-        if val != True:
+        if not (isinstance(val, bool) and val == True):
             training_cmd_args.append(str(val))
     args = parser.parse_args(training_cmd_args)
     launch.launch_command(args)
