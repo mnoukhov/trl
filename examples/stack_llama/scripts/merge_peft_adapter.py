@@ -1,23 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
-import peft
 import torch
 from peft import PeftConfig, PeftModel
-from peft.utils import _get_submodules
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    HfArgumentParser,
-)
-
-
-DEFAULT_PAD_TOKEN = "[PAD]"
-DEFAULT_EOS_TOKEN = "</s>"
-DEFAULT_BOS_TOKEN = "</s>"
-DEFAULT_UNK_TOKEN = "</s>"
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, HfArgumentParser
 
 
 @dataclass
@@ -50,7 +36,8 @@ assert (
 ), "please provide the output name of the merged model"
 
 peft_config = PeftConfig.from_pretrained(script_args.adapter_model_name)
-if "rm" in script_args.adapter_model_name:
+if peft_config.task_type == "SEQ_CLS":
+    # peft is for reward model so load sequence classification
     model = AutoModelForSequenceClassification.from_pretrained(
         script_args.base_model_name, num_labels=1, torch_dtype=torch.bfloat16
     )
@@ -60,7 +47,6 @@ else:
     )
 
 tokenizer = AutoTokenizer.from_pretrained(script_args.base_model_name)
-config = AutoConfig.from_pretrained(script_args.base_model_name)
 
 # Load the Lora model
 model = PeftModel.from_pretrained(model, script_args.adapter_model_name)

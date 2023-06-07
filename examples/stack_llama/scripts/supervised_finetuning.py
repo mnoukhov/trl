@@ -5,13 +5,7 @@ from accelerate import Accelerator
 from datasets import load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    TrainingArguments,
-    logging,
-    set_seed,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, logging, set_seed
 
 from trl import SFTTrainer
 from trl.trainer import ConstantLengthDataset

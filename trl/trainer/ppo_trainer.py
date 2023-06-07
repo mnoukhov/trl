@@ -14,6 +14,7 @@
 import inspect
 import os
 import time
+import typing
 import warnings
 from typing import Callable, List, Optional, Union
 
@@ -27,6 +28,7 @@ from torch.optim import Adam
 from transformers import (
     DataCollatorForLanguageModeling,
     PreTrainedTokenizer,
+    PreTrainedTokenizerBase,
     PreTrainedTokenizerFast,
 )
 
@@ -46,11 +48,7 @@ from ..core import (
     stats_to_np,
 )
 from ..import_utils import is_torch_greater_2_0
-from ..models import (
-    SUPPORTED_ARCHITECTURES,
-    PreTrainedModelWrapper,
-    create_reference_model,
-)
+from ..models import SUPPORTED_ARCHITECTURES, PreTrainedModelWrapper, create_reference_model
 from . import AdaptiveKLController, BaseTrainer, FixedKLController, PPOConfig
 
 
@@ -114,7 +112,7 @@ class PPOTrainer(BaseTrainer):
             transformer model with a casual language modelling head. Check the documentation of `PreTrainedModelWrapper`
             for more details. If no reference model is provided, the trainer will create a reference model with the same
              architecture as the model to be optimized with shared layers.
-        **tokenizer** (`Union[PreTrainedTokenizer, PreTrainedTokenizerFast]`) -- Tokenizer to be used for encoding the
+        **tokenizer** (`PreTrainedTokenizerBase`) -- Tokenizer to be used for encoding the
             data. Check the documentation of `transformers.PreTrainedTokenizer` and
             `transformers.PreTrainedTokenizerFast` for more details.
         **dataset** (Union[`torch.utils.data.Dataset`, `datasets.Dataset`], *optional*) -- PyTorch dataset or Hugging
@@ -135,11 +133,11 @@ class PPOTrainer(BaseTrainer):
         self,
         config: PPOConfig = None,
         model: PreTrainedModelWrapper = None,
-        ref_model: PreTrainedModelWrapper = None,
-        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast] = None,
+        ref_model: Optional[PreTrainedModelWrapper] = None,
+        tokenizer: PreTrainedTokenizerBase = None,
         dataset: Optional[Union[torch.utils.data.Dataset, Dataset]] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        data_collator=None,
+        data_collator: Optional[typing.Callable] = None,
         num_shared_layers: Optional[int] = None,
         lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
         ema_model=None,
@@ -154,9 +152,9 @@ class PPOTrainer(BaseTrainer):
                 Hugging Face transformer model with a value head.
             ref_model (`PreTrainedModelWrapper`):
                 Hugging Face transformer model with a casual language modelling head. Used for KL penalty
-            tokenizer (`transformers.PreTrainedTokenizer`):
+            tokenizer (`transformers.PreTrainedTokenizerBase`):
                 Hugging Face tokenizer
-            dataset (Union[`torch.utils.data.Dataset`, `datasets.Dataset`], *optional*):
+            dataset (Optional[Union[`torch.utils.data.Dataset`, `datasets.Dataset`]]):
                 PyTorch dataset or Hugging Face dataset. If a Hugging Face dataset is passed, the dataset
                 will be preprocessed by removing the columns that are not used by the model. If none is passed,
                 a warning will be raised in a multi-GPU setting.
@@ -178,9 +176,9 @@ class PPOTrainer(BaseTrainer):
         # Step 0: check positional arguments validity
         if not isinstance(config, PPOConfig):
             raise ValueError(f"config must be a PPOConfig, got {type(config)}")
-        if not isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
+        if not isinstance(tokenizer, (PreTrainedTokenizerBase)):
             raise ValueError(
-                f"tokenizer must be a PreTrainedTokenizer or PreTrainedTokenizerFast, got {type(tokenizer)}"
+                f"tokenizer must be a PreTrainedTokenizerBase like a PreTrainedTokenizer or a PreTrainedTokenizerFast, got {type(tokenizer)}"
             )
         if not isinstance(model, (SUPPORTED_ARCHITECTURES)):
             raise ValueError(

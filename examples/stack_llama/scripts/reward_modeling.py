@@ -5,11 +5,9 @@ import evaluate
 import numpy as np
 import torch
 import torch.nn as nn
-from accelerate import Accelerator
 from datasets import load_dataset
-from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
-    AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     HfArgumentParser,
@@ -55,9 +53,9 @@ class ScriptArguments:
         },
     )
     tokenizer_name: Optional[str] = field(
-        default="gpt2",
+        default=None,
         metadata={
-            "help": "The model that you want to train from the Hugging Face hub. E.g. gpt2, gpt2-xl, bert, etc."
+            "help": "The tokenizer for your model, if left empty will use the default for your model",
         },
     )
     just_eval: Optional[bool] = field(default=False)
@@ -93,6 +91,10 @@ class ScriptArguments:
         metadata={"help": "The lr scheduler"},
     )
     max_length: Optional[int] = field(default=512)
+    eval_first_step: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to run eval after the first step"},
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -137,39 +139,24 @@ training_args = TrainingArguments(
     lr_scheduler_type=script_args.lr_scheduler_type,
 )
 # Load the value-head model and tokenizer.
-tokenizer = AutoTokenizer.from_pretrained(
-    script_args.tokenizer_name, use_auth_token=True
+tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_auth_token=True)
+tokenizer.pad_token = tokenizer.eos_token
+
+
+peft_config = LoraConfig(
+    task_type=TaskType.SEQ_CLS,
+    inference_mode=False,
+    r=8,
+    lora_alpha=32,
+    lora_dropout=0.1,
 )
-config = AutoConfig.from_pretrained(script_args.model_name)
 
-if script_args.load_in_8bit:
-    current_device = Accelerator().local_process_index
-    model = AutoModelForSequenceClassification.from_pretrained(
-        script_args.model_name,
-        num_labels=1,
-        load_in_8bit=True,
-        device_map={"": current_device},
-    )
-else:
-    model = AutoModelForSequenceClassification.from_pretrained(
-        script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
-    )
+model = AutoModelForSequenceClassification.from_pretrained(
+    script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
+)
 
-if script_args.adapter_model_name is None:
-    peft_config = LoraConfig(
-        task_type=TaskType.SEQ_CLS,
-        inference_mode=False,
-        r=8,
-        lora_alpha=32,
-        lora_dropout=0.1,
-    )
-
-    model = get_peft_model(model, peft_config)
-else:
-    model = PeftModel.from_pretrained(model, script_args.adapter_model_name)
-
-    if script_args.merge_peft:
-        model = model.merge_and_unload()
+model = get_peft_model(model, peft_config)
 
 model.print_trainable_parameters()
 
@@ -325,13 +312,14 @@ trainer = RewardTrainer(
 )
 
 
-class EvaluateFirstStepCallback(TrainerCallback):
-    def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step == 1:
-            control.should_evaluate = True
+if script_args.eval_first_step:
 
+    class EvaluateFirstStepCallback(TrainerCallback):
+        def on_step_end(self, args, state, control, **kwargs):
+            if state.global_step == 1:
+                control.should_evaluate = True
 
-trainer.add_callback(EvaluateFirstStepCallback())
+    trainer.add_callback(EvaluateFirstStepCallback())
 
 if script_args.just_eval:
     training_args.set_logging(report_to="none")
