@@ -95,6 +95,8 @@ class ScriptArguments:
         default=False,
         metadata={"help": "Whether to run eval after the first step"},
     )
+    num_head_layers: Optional[int] = field(default=1)
+    train_only_head: Optional[bool] = field(default=False)
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -156,9 +158,30 @@ model = AutoModelForSequenceClassification.from_pretrained(
     script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
 )
 
-model = get_peft_model(model, peft_config)
+if script_args.num_head_layers != 1:
+    hidden_size = model.score.in_features
+    dtype = model.score.weight.dtype
+    layers = []
+    layers = []
+    for _ in range(script_args.num_head_layers - 1):
+        layers.extend([
+            nn.Linear(hidden_size, hidden_size, bias=False, dtype=dtype),
+            nn.ReLU(),
+        ])
+    layers.append(nn.Linear(hidden_size, 1, bias=False, dtype=dtype))
 
-model.print_trainable_parameters()
+    model.score = nn.Sequential(*layers)
+
+if script_args.train_only_head:
+    for param in model.parameters():
+        param.requires_grad = False
+
+    for param in model.score.parameters():
+        param.requires_grad = True
+else:
+    model = get_peft_model(model, peft_config)
+
+    model.print_trainable_parameters()
 
 # Need to do this for gpt2, because it doesn't have an official pad token.
 tokenizer.pad_token = tokenizer.eos_token
