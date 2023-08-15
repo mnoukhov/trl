@@ -32,6 +32,7 @@ if is_peft_available():
         PeftModel,
         PeftModelForCausalLM,
         PeftModelForSeq2SeqLM,
+        PromptLearningConfig,
         get_peft_model,
         prepare_model_for_int8_training,
     )
@@ -123,12 +124,14 @@ class PreTrainedModelWrapper(nn.Module):
             reward_adapter_name = kwargs.pop("reward_adapter_name", "reward_adapter")
             is_trainable = kwargs.pop("is_trainable", False)
             trl_model_args, pretrained_kwargs, peft_quantization_kwargs = cls._split_kwargs(kwargs)
+            token = pretrained_kwargs.get("token", None)
         else:
             peft_config = None
             is_trainable = False
             trl_model_args = {}
             pretrained_kwargs = {}
             peft_quantization_kwargs = {}
+            token = None
 
         if reward_adapter is not None and not isinstance(reward_adapter, str):
             raise ValueError(
@@ -136,6 +139,7 @@ class PreTrainedModelWrapper(nn.Module):
             )
 
         is_peft_model = False
+
         current_device = cls._get_current_device()
         if isinstance(pretrained_model_name_or_path, str):
             is_loaded_in_8bit = pretrained_kwargs["load_in_8bit"] if "load_in_8bit" in pretrained_kwargs else False
@@ -163,7 +167,11 @@ class PreTrainedModelWrapper(nn.Module):
             if is_peft_available():
                 try:
                     # If there is a trained peft adapter in the hub, load its config.
-                    remote_adapter_config = hf_hub_download(pretrained_model_name_or_path, "adapter_config.json")
+                    remote_adapter_config = hf_hub_download(
+                        pretrained_model_name_or_path,
+                        "adapter_config.json",
+                        token=token,
+                    )
                 except:  # noqa
                     remote_adapter_config = None
             else:
@@ -230,6 +238,11 @@ class PreTrainedModelWrapper(nn.Module):
         if is_peft_available():
             if isinstance(pretrained_model, PeftModel):
                 is_peft_model = True
+                # for backward compatibility
+                if hasattr(pretrained_model, "active_peft_config") and isinstance(
+                    pretrained_model.active_peft_config, PromptLearningConfig
+                ):
+                    raise ValueError("PromptLearningConfig is not supported for PPO training.")
         # Then, create the full model by instantiating the wrapper class
 
         if not is_peft_model and reward_adapter is not None:
@@ -258,7 +271,11 @@ class PreTrainedModelWrapper(nn.Module):
 
             if not os.path.exists(filename):
                 try:
-                    filename = hf_hub_download(pretrained_model_name_or_path, "pytorch_model.bin")
+                    filename = hf_hub_download(
+                        pretrained_model_name_or_path,
+                        "pytorch_model.bin",
+                        token=token,
+                    )
                 # sharded
                 except:  # noqa
                     if os.path.exists(sharded_index_filename):
@@ -266,7 +283,9 @@ class PreTrainedModelWrapper(nn.Module):
                     else:
                         try:
                             index_file_name = hf_hub_download(
-                                pretrained_model_name_or_path, "pytorch_model.bin.index.json"
+                                pretrained_model_name_or_path,
+                                "pytorch_model.bin.index.json",
+                                token=token,
                             )
                         except ValueError:  # not continue training, do not have v_head weight
                             is_resuming_training = False
@@ -289,7 +308,11 @@ class PreTrainedModelWrapper(nn.Module):
                     # download each file and add it to the state_dict
                     state_dict = {}
                     for shard_file in files_to_download:
-                        filename = hf_hub_download(pretrained_model_name_or_path, shard_file)
+                        filename = hf_hub_download(
+                            pretrained_model_name_or_path,
+                            shard_file,
+                            token=token,
+                        )
                         state_dict.update(torch.load(filename, map_location="cpu"))
                 else:
                     state_dict = torch.load(filename, map_location="cpu")
@@ -298,6 +321,7 @@ class PreTrainedModelWrapper(nn.Module):
             state_dict = pretrained_model_name_or_path.state_dict()
 
         model.is_peft_model = is_peft_model
+
         model.current_device = current_device
 
         if is_resuming_training:
@@ -306,7 +330,7 @@ class PreTrainedModelWrapper(nn.Module):
         if not is_peft_model and reward_adapter is not None:
             raise ValueError("reward_adapter can only be used with a PeftModel. ")
         elif is_peft_model and reward_adapter is not None:
-            model.add_and_load_reward_modeling_adapter(reward_adapter)
+            model.add_and_load_reward_modeling_adapter(reward_adapter, token=token)
             model.supports_rm_adapter = True
         else:
             model.supports_rm_adapter = False
@@ -316,17 +340,15 @@ class PreTrainedModelWrapper(nn.Module):
     @classmethod
     def _get_current_device(cls):
         r"""
-        Get the current device using the `Accelerate` object - We just return the
-        process index of the `Accelerate` object to handle corner cases when running scripts
-        in distributed setups.
+        Get the current device. For GPU, we return the local process index using the `Accelerator`
+        object to handle corner cases when running scripts in distributed environments.
 
         Returns:
-            current_device (`int`):
-                The current device index.
+            current_device (`Union[int, str]`):
+                The current device.
         """
         dummy_accelerator = Accelerator()
-        current_device = dummy_accelerator.process_index
-        return current_device if torch.cuda.is_available() else "cpu"
+        return dummy_accelerator.local_process_index if torch.cuda.is_available() else "cpu"
 
     @classmethod
     def _split_kwargs(cls, kwargs):
@@ -420,7 +442,11 @@ class PreTrainedModelWrapper(nn.Module):
 
     @classmethod
     def add_and_load_reward_modeling_adapter(
-        cls, pretrained_model, adapter_model_id, adapter_name="reward_model_adapter"
+        cls,
+        pretrained_model,
+        adapter_model_id,
+        adapter_name="reward_model_adapter",
+        token=None,
     ):
         r"""
         Add and load a reward modeling adapter. This method can only be used if the
@@ -431,7 +457,11 @@ class PreTrainedModelWrapper(nn.Module):
         filename = os.path.join(adapter_model_id, "adapter_model.bin")
         if not os.path.exists(filename):
             try:
-                local_filename = hf_hub_download(adapter_model_id, "adapter_model.bin")
+                local_filename = hf_hub_download(
+                    adapter_model_id,
+                    "adapter_model.bin",
+                    token=token,
+                )
             except:  # noqa
                 raise ValueError(
                     "Could not find adapter model in the Hub, make sure you have the correct adapter model id."
