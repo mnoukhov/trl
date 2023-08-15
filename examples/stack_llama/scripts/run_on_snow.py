@@ -25,6 +25,8 @@ def run_exp(exp_dict, savedir, args):
         # human_eval.main(exp_dict)
         accelerate_launch("/home/toolkit/bigcode-evaluation-harness/main.py", exp_dict)
         # accelerate_launch("human_eval.py", exp_dict)
+    elif exp_name.startswith("rew"):
+        accelerate_launch("evaluate_reward.py", exp_dict, args.gpus)
     elif exp_name.startswith("rlhf"):
         accelerate_launch("er_training.py", exp_dict, args.gpus)
     elif exp_name.startswith("rm"):

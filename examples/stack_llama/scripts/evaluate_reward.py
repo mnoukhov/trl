@@ -76,7 +76,7 @@ class ScriptArguments:
     # models like gpt-neo* models are more suitable.
     model_name: Optional[str] = field(default="", metadata={"help": "the model name"})
     tokenizer_name: Optional[str] = field(
-        default="", metadata={"help": "the tokenizer name"}
+        default=None, metadata={"help": "the tokenizer name"}
     )
     reward_model_name: Optional[str] = field(
         default="", metadata={"help": "the reward model name"}
@@ -131,6 +131,9 @@ class ScriptArguments:
     seed: Optional[int] = field(default=0, metadata={"help": "the seed"})
     steps: Optional[int] = field(default=20000, metadata={"help": "number of epochs"})
     start_epoch: Optional[int] = field(default=0, metadata={"help": "number of epochs"})
+    fp16: Optional[bool] = field(
+        default=False, metadata={"help": "whether to use the batched text gen"}
+    )
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -167,21 +170,25 @@ sent_kwargs = {
     "truncation": True,
 }
 
-tokenizer = LlamaTokenizer.from_pretrained(script_args.tokenizer_name)
+if script_args.tokenizer_name is None:
+    tokenizer_name = script_args.model_name
+else:
+    tokenizer_name = script_args.tokenizer_name
+tokenizer = LlamaTokenizer.from_pretrained(tokenizer_name)
 # GPT-2 tokenizer has a pad token, but it is not eos_token by default. We need to set it to eos_token.
 # only for this model.
 
-if "llama" in script_args.tokenizer_name:
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
-else:
-    tokenizer.pad_token = tokenizer.eos_token
+# if "llama" in script_args.tokenizer_name:
+tokenizer.add_special_tokens(
+    {
+        "eos_token": DEFAULT_EOS_TOKEN,
+        "bos_token": DEFAULT_BOS_TOKEN,
+        "unk_token": DEFAULT_UNK_TOKEN,
+        "pad_token": DEFAULT_PAD_TOKEN,
+    }
+)
+# else:
+#     tokenizer.pad_token = tokenizer.eos_token
 
 
 # Below is an example function to build the dataset. In our case, we use the IMDB dataset
@@ -250,27 +257,28 @@ set_seed(config.seed)
 # Now let's build the model, the reference model, and the tokenizer.
 current_device = Accelerator().local_process_index
 
-if script_args.load_dir is not None:
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        script_args.load_dir,
-        load_in_8bit=True,
-        device_map={"": current_device},
-        is_trainable=True,
-    )
-else:
-    lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        config.model_name,
-        load_in_8bit=True,
-        device_map={"": current_device},
-        peft_config=lora_config,
-    )
+# if script_args.load_dir is not None:
+model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    script_args.model_name,
+    # load_in_8bit=True,
+    device_map={"": current_device},
+    is_trainable=True,
+    torch_dtype=torch.float16,
+)
+# else:
+#     lora_config = LoraConfig(
+#         r=16,
+#         lora_alpha=32,
+#         lora_dropout=0.05,
+#         bias="none",
+#         task_type="CAUSAL_LM",
+#     )
+#     model = AutoModelForCausalLMWithValueHead.from_pretrained(
+#         config.model_name,
+#         load_in_8bit=True,
+#         device_map={"": current_device},
+#         peft_config=lora_config,
+#     )
 
 optimizer = None
 if script_args.adafactor:
@@ -374,18 +382,3 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     ]
     ppo_trainer.accelerator.print(f"Rewards {sum(rewards) / len(rewards)}")
     exit()
-
-    # Run PPO step
-    stats = ppo_trainer.step(question_tensors, response_tensors, rewards)
-    ppo_trainer.log_stats(stats, batch, rewards)
-
-    if script_args.save_freq and epoch and epoch % script_args.save_freq == 0:
-        ppo_trainer.save_pretrained(script_args.output_dir + f"step_{epoch}")
-
-    if script_args.reset_freq and epoch and epoch % script_args.reset_freq == 0:
-        ema.copy_to()
-        ema.load_state_dict(initial_state_dict)
-        ppo_trainer.accelerator.print("elastic reset")
-
-    if epoch >= config.total_ppo_epochs - 1:
-        break
