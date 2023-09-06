@@ -30,7 +30,7 @@ input_max_text_length = 12
 
 
 def create_and_prepare_dataset(tokenizer):
-    dataset = load_dataset(dataset_name, split="train[:1%]")
+    dataset = load_dataset("Anthropic/hh-rlhf", split="test")
 
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
