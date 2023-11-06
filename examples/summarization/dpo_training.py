@@ -56,6 +56,7 @@ class ScriptArguments:
     beta: Optional[float] = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
 
     # model parameters
+    tokenizer_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     model_name: Optional[str] = field(default="gpt2", metadata={"help": "the model name"})
     bf16: Optional[bool] = field(
         default=False,
@@ -142,7 +143,9 @@ class DPOTrainerWithGold(DPOTrainer):
         *args,
         **kwargs,
     ):
+        # self.generate_during_eval = kwargs.pop("generate_during_eval", False)
         super().__init__(*args, **kwargs)
+        
         self.gold_model = self.accelerator.prepare_model(gold_model, evaluation_mode=True)
 
     def evaluation_loop(
@@ -337,7 +340,7 @@ def create_and_prepare_model(args):
                     module = module.to(torch.bfloat16)
 
     # tokenizer_name = script_args.model_name if script_args.tokenizer_name is None else script_args.tokenizer_name
-    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
     # tokenizer.truncation_side = "left"
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token

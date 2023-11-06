@@ -28,7 +28,7 @@ class ScriptArguments:
     )
     model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     dataset_name: Optional[str] = field(
-        default="CarperAI/openai_summarize_comparisons", metadata={"help": "the dataset name"}
+        default="mnoukhov/openai_summarize_comparisons_relabel_pythia1b", metadata={"help": "the dataset name"}
     )
     train_split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
     eval_split: Optional[str] = field(default="test[:20]", metadata={"help": "the dataset name"})
@@ -224,7 +224,7 @@ for split in data_splits:
                     output_dataset["chosen"].append(init_chosen)
                     output_dataset["rejected"].append(generated)
 
-    ds_info = DatasetInfo("CarperAI/openai_summarize_comparisons relabelled with a DPO finetuned Pythia 410m")
+    ds_info = DatasetInfo("CarperAI/openai_summarize_comparisons_relabel_pythia1b relabeled with a DPO finetuned Pythia 410m")
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
 relabel_dataset.save_to_disk(script_args.output_dir)
