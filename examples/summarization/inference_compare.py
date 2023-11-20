@@ -28,7 +28,11 @@ class ScriptArguments:
     )
     model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     dataset_name: Optional[str] = field(
+<<<<<<< HEAD
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
+=======
+        default="CarperAI/openai_summarize_comparisons", metadata={"help": "the dataset name"}
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
     )
     train_split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
     eval_split: Optional[str] = field(default="test[:20]", metadata={"help": "the dataset name"})
@@ -96,7 +100,11 @@ def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
         temperature=args.temperature,
         do_sample=args.do_sample,
         max_new_tokens=args.max_new_tokens,
+<<<<<<< HEAD
         num_return_sequences=2,
+=======
+        num_return_sequences=1,
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
         pad_token_id=model.config.pad_token_id,
     )
 
@@ -110,13 +118,18 @@ def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
             return_dict_in_generate=True,
         )
         sequences = accelerator.gather(generation_output.sequences)
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
     return sequences
 
 
 def preprocess_function(examples):
     str_chosen = []
     str_rejected = []
+<<<<<<< HEAD
     prompts = []
 
     for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
@@ -124,6 +137,13 @@ def preprocess_function(examples):
         prompts.append(prompt + "\nTL;DR:")
         str_chosen.append(prompt + "\nTL;DR:" + chosen)
         str_rejected.append(prompt + "\nTL;DR:" + rejected)
+=======
+    prompt = []
+
+    for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        str_chosen.append(prompt + "\n" + chosen)
+        str_rejected.append(prompt + "\n" + rejected)
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
 
     tokenized_chosen = tokenizer(
         str_chosen, padding="max_length", truncation=True, max_length=script_args.seq_length, return_tensors="pt"
@@ -133,7 +153,11 @@ def preprocess_function(examples):
     )
 
     tokenized_prompt = tokenizer(
+<<<<<<< HEAD
         prompts,
+=======
+        examples["prompt"],
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
         padding="max_length",
         truncation=True,
         max_length=script_args.seq_length,
@@ -155,6 +179,7 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 accelerator = Accelerator()
 
+<<<<<<< HEAD
 data_splits = [split for split in [script_args.train_split] if split is not None]
 relabel_dataset = DatasetDict()
 
@@ -169,6 +194,20 @@ for split in data_splits:
     model, reward_model, dataloader = accelerator.prepare(model, reward_model, dataloader)
     model.eval()
     reward_model.eval()
+=======
+data_splits = [split for split in [script_args.train_split, script_args.eval_split] if split is not None]
+relabel_dataset = DatasetDict()
+
+for split in data_splits:
+    model, tokenizer = create_and_prepare_model(script_args, generation=True)
+    dataset = load_dataset(script_args.dataset_name, split=split)
+
+    dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
+
+    model, dataloader = accelerator.prepare(model, dataloader)
+
+    model.eval()
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
 
     output_dataset = {"prompt": [], "chosen": [], "rejected": []}
 
@@ -183,6 +222,7 @@ for split in data_splits:
                 model,
                 script_args,
             )
+<<<<<<< HEAD
         
             generated_sequences = sequences
             generated_attention_mask = torch.ones_like(generated_sequences)
@@ -215,6 +255,54 @@ for split in data_splits:
                     output_dataset["rejected"].append(gen_text_even)
             
     ds_info = DatasetInfo("CarperAI/openai_summarize_unlabelled relabeled with a DPO finetuned Pythia 410m")
+=======
+            generated_sequences.append(sequences)
+
+    generated_sequences = torch.cat(generated_sequences, dim=0)
+    model, tokenizer = create_and_prepare_model(script_args, generation=False)
+    model, dataloader = accelerator.prepare(model, dataloader)
+    model.eval()
+
+    generated_sequences_data_loader = DataLoader(generated_sequences, batch_size=script_args.batch_size)
+    model, generated_sequences_data_loader = accelerator.prepare(model, generated_sequences_data_loader)
+
+    for examples, generated_sequences in tqdm(zip(dataloader, generated_sequences_data_loader)):
+        inputs = preprocess_function(examples)
+        with torch.no_grad():
+            generated_attention_mask = torch.ones_like(generated_sequences)
+            generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
+            rewards_generated = model(
+                input_ids=generated_sequences.to(accelerator.device),
+                attention_mask=generated_attention_mask.to(accelerator.device),
+            )[0]
+            rewards_chosen = model(
+                input_ids=inputs["input_ids_chosen"].to(accelerator.device),
+                attention_mask=inputs["attention_mask_chosen"].to(accelerator.device),
+            )[0]
+            rewards_rejected = model(
+                input_ids=inputs["input_ids_rejected"].to(accelerator.device),
+                attention_mask=inputs["attention_mask_rejected"].to(accelerator.device),
+            )[0]
+          
+            generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
+            pseudolabels = torch.sign(rewards_generated - rewards_chosen)
+
+            pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
+
+            for prompt, init_chosen, init_rejected, generated, label in zip(
+                examples["prompt"], examples["chosen"], examples["rejected"], generated_texts, pseudolabels
+            ):
+                output_dataset["prompt"].append(prompt)
+                # TODO decide which one to save as chosen/rejected
+                if label >= 0:
+                    output_dataset["chosen"].append(generated)
+                    output_dataset["rejected"].append(init_chosen)
+                else:
+                    output_dataset["chosen"].append(init_chosen)
+                    output_dataset["rejected"].append(generated)
+
+    ds_info = DatasetInfo("CarperAI/openai_summarize_comparisons relabelled with a DPO finetuned Pythia 410m")
+>>>>>>> b09d03aadde19ca4e58f5a6530834e4302411483
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
 relabel_dataset.save_to_disk(script_args.output_dir)
