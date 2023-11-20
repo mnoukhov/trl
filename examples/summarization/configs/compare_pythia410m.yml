@@ -1,0 +1,5 @@
+output_dir: /home/toolkit/huggingface/openai_summarize_unlabelled_relabel_dpo_pythia410m_gen1
+model_name: arianhosseini/pythia410m-tldr-dpo-1b-relbl-10k
+dataset_name: arianhosseini/openai_summarize_unlabelled
+train_split: train[:10000]
+batch_size: 64
