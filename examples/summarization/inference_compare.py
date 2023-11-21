@@ -8,8 +8,6 @@ from peft import AutoPeftModelForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
     AutoTokenizer,
     BitsAndBytesConfig,
     GenerationConfig,
@@ -61,11 +59,6 @@ def create_and_prepare_model(args, generation=False):
         torch_dtype = torch.float16
     else:
         torch_dtype = None
-
-# if generation:
-#     cls = AutoModelForCausalLM
-# else:
-#     cls = AutoModelForSequenceClassification
 
     model = AutoPeftModelForCausalLM.from_pretrained(
         args.model_name,
@@ -172,7 +165,6 @@ accelerator = Accelerator()
 data_splits = [split for split in [script_args.train_split] if split is not None]
 relabel_dataset = DatasetDict()
 
-# reward_model, _ = create_and_prepare_model(script_args, generation=False)
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
 for split in data_splits:
@@ -200,8 +192,6 @@ for split in data_splits:
                 model,
                 script_args,
             )
-# generated_attention_mask = torch.ones_like(generated_sequences)
-# generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
 
             #TODO 
             #create input ids that are right-padded with tokenizer.pad_token_id
