@@ -177,6 +177,7 @@ for split in data_splits:
     output_dataset = {"prompt": [], "chosen": [], "rejected": []}
 
     for examples in tqdm(dataloader):
+        tokenizer.padding_side = "left"
         inputs = tokenizer(
             examples["prompt"],
             padding=True,
@@ -187,39 +188,42 @@ for split in data_splits:
 
         with torch.no_grad():
             generated_sequences = generate_from_prompt(
-                inputs["input_ids_prompt"].to(accelerator.device),
-                inputs["attention_mask_prompt"].to(accelerator.device),
+                inputs["input_ids"].to(accelerator.device),
+                inputs["attention_mask"].to(accelerator.device),
                 model,
                 script_args,
             )
 
-            #TODO 
-            #create input ids that are right-padded with tokenizer.pad_token_id
-            #create corresponding attention mask
-            #create labels corresponding to the generated tokens (not including prompt) 
-            #should have -100 (label_pad_token) everywhere else
-            reward_model_input = {
-                "input_ids": None,
-                "attention_mask": generated_attention_mask,
-                "labels": None,
+            generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
+            tokenizer.padding_side = "right"
+            generated_encodings = tokenizer(
+                generated_texts, padding=True, truncation=True, max_length=script_args.seq_length, return_tensors="pt"
+            )
+
+            generated_labels = generated_encodings["input_ids"].clone()
+            generated_labels[generated_labels == tokenizer.pad_token_id] = -100
+            prompt_lens = inputs["attention_mask"].sum(-1)
+            for i, prompt_len in enumerate(prompt_lens):
+                generated_labels[i * 2 : i * 2 + 2, :prompt_len] = -100
+
+            reward_model_inputs = {
+                "input_ids": generated_encodings["input_ids"].to(accelerator.device),
+                "attention_mask": generated_encodings["attention_mask"].to(accelerator.device),
+                "labels": generated_labels.to(accelerator.device),
             }
 
-            rewards_generated = reward_model(accelerator, model, reward_model_inputs)
+            rewards_generated = reward_model(accelerator, model, reward_model_inputs)  # batch size
 
-            generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
-            rewards_generated = rewards_generated.view(-1, 2, rewards_generated.shape[-1])
-            rewards_generated_even = rewards_generated[:, 0, :]
-            rewards_generated_odd = rewards_generated[:, 1, :]
+            rewards_generated_even = rewards_generated[::2]
+            rewards_generated_odd = rewards_generated[1::2]
 
             pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
             for gen_text_even, gen_text_odd, label in zip(generated_texts[::2], generated_texts[1::2], pseudolabels):
-# TODO make TLDR: part of the prompt
-# make sure chosen and rejected don't start with a space
-                prompt = gen_text_even.split("\nTL;DR:")[0]
-                gen_text_even = gen_text_even.split("\nTL;DR:")[1]
-                gen_text_odd = gen_text_odd.split("\nTL;DR:")[1]
+                prompt = gen_text_even.split("\nTL;DR:")[0] + "\nTL;DR:"
+                gen_text_even = gen_text_even.split("\nTL;DR:")[1].strip()
+                gen_text_odd = gen_text_odd.split("\nTL;DR:")[1].strip()
 
                 output_dataset["prompt"].append(prompt)
                 if label >= 0:
