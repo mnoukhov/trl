@@ -62,11 +62,6 @@ def create_and_prepare_model(args, generation=False):
     else:
         torch_dtype = None
 
-# if generation:
-#     cls = AutoModelForCausalLM
-# else:
-#     cls = AutoModelForSequenceClassification
-
     model = AutoPeftModelForCausalLM.from_pretrained(
         args.model_name,
         quantization_config=quantization_config,
@@ -152,14 +147,14 @@ def get_batch_logps(
         return (per_token_logps * loss_mask).sum(-1)
 
 
-def reward_model(accelerator, model, inputs):
+def reward_model(accelerator, model, input_ids, attention_mask):
     with torch.no_grad():
-        policy_logits = model(inputs["input_ids"], attention_mask=inputs["attention_mask"]).logits.to(torch.float32)
-        policy_logps = get_batch_logps(policy_logits, inputs["labels"], average_log_prob=False)
+        policy_logits = model(input_ids, attention_mask=attention_mask).logits.to(torch.float32)
+        policy_logps = get_batch_logps(policy_logits, input_ids, average_log_prob=False)
 
         with accelerator.unwrap_model(model).disable_adapter():
-            ref_logits = model(inputs["input_ids"], attention_mask=inputs["attention_mask"]).logits.to(torch.float32)
-            ref_logps = get_batch_logps(ref_logits, inputs["labels"], average_log_prob=False)
+            ref_logits = model(input_ids, attention_mask=attention_mask).logits.to(torch.float32)
+            ref_logps = get_batch_logps(ref_logits, input_ids, average_log_prob=False)
 
     return policy_logps - ref_logps
 
@@ -172,7 +167,6 @@ accelerator = Accelerator()
 data_splits = [split for split in [script_args.train_split] if split is not None]
 relabel_dataset = DatasetDict()
 
-# reward_model, _ = create_and_prepare_model(script_args, generation=False)
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
 for split in data_splits:
@@ -196,8 +190,8 @@ for split in data_splits:
 
         with torch.no_grad():
             sequences = generate_from_prompt(
-                inputs["input_ids_prompt"].to(accelerator.device),
-                inputs["attention_mask_prompt"].to(accelerator.device),
+                inputs["input_ids"].to(accelerator.device),
+                inputs["attention_mask"].to(accelerator.device),
                 model,
                 script_args,
             )
@@ -205,12 +199,8 @@ for split in data_splits:
             generated_sequences = sequences
             generated_attention_mask = torch.ones_like(generated_sequences)
             generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
-            rewards_generated = reward_model(accelerator, model, 
-            # rewards_generated = reward_model(
-            #     input_ids=generated_sequences.to(accelerator.device),
-            #     attention_mask=generated_attention_mask.to(accelerator.device),
-            # )[0]
-
+            rewards_generated = reward_model(accelerator, model, generated_sequences, generated_attention_mask)
+            
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             rewards_generated = rewards_generated.view(-1, 2, rewards_generated.shape[-1])
             rewards_generated_even = rewards_generated[:, 0, :]
