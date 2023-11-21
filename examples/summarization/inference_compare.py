@@ -184,7 +184,6 @@ for split in data_splits:
 
     output_dataset = {"prompt": [], "chosen": [], "rejected": []}
 
-    generated_sequences = []
     for examples in tqdm(dataloader):
         inputs = tokenizer(
             examples["prompt"],
@@ -195,21 +194,27 @@ for split in data_splits:
         )
 
         with torch.no_grad():
-            sequences = generate_from_prompt(
+            generated_sequences = generate_from_prompt(
                 inputs["input_ids_prompt"].to(accelerator.device),
                 inputs["attention_mask_prompt"].to(accelerator.device),
                 model,
                 script_args,
             )
+# generated_attention_mask = torch.ones_like(generated_sequences)
+# generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
 
-            generated_sequences = sequences
-            generated_attention_mask = torch.ones_like(generated_sequences)
-            generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
-            rewards_generated = reward_model(accelerator, model, 
-            # rewards_generated = reward_model(
-            #     input_ids=generated_sequences.to(accelerator.device),
-            #     attention_mask=generated_attention_mask.to(accelerator.device),
-            # )[0]
+            #TODO 
+            #create input ids that are right-padded with tokenizer.pad_token_id
+            #create corresponding attention mask
+            #create labels corresponding to the generated tokens (not including prompt) 
+            #should have -100 (label_pad_token) everywhere else
+            reward_model_input = {
+                "input_ids": None,
+                "attention_mask": generated_attention_mask,
+                "labels": None,
+            }
+
+            rewards_generated = reward_model(accelerator, model, reward_model_inputs)
 
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             rewards_generated = rewards_generated.view(-1, 2, rewards_generated.shape[-1])
@@ -219,8 +224,9 @@ for split in data_splits:
             pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
-# loop through each two generated texts
             for gen_text_even, gen_text_odd, label in zip(generated_texts[::2], generated_texts[1::2], pseudolabels):
+# TODO make TLDR: part of the prompt
+# make sure chosen and rejected don't start with a space
                 prompt = gen_text_even.split("\nTL;DR:")[0]
                 gen_text_even = gen_text_even.split("\nTL;DR:")[1]
                 gen_text_odd = gen_text_odd.split("\nTL;DR:")[1]
