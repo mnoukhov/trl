@@ -1,23 +1,20 @@
-import shutil
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
 from accelerate import Accelerator
 from datasets import Dataset, DatasetDict, DatasetInfo, load_dataset
+from peft import AutoPeftModelForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
-    AutoModelForSequenceClassification,
     AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
     AutoTokenizer,
     BitsAndBytesConfig,
-    HfArgumentParser,
     GenerationConfig,
+    HfArgumentParser,
 )
-
-
-shutil.disk_usage = lambda x: shutil._ntuple_diskusage(1, 1, 1)
 
 
 @dataclass
@@ -27,6 +24,7 @@ class ScriptArguments:
         metadata={"help": "output folder"},
     )
     model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
+    tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     dataset_name: Optional[str] = field(
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
@@ -64,12 +62,12 @@ def create_and_prepare_model(args, generation=False):
     else:
         torch_dtype = None
 
-    if generation:
-        cls = AutoModelForCausalLM
-    else:
-        cls = AutoModelForSequenceClassification
+# if generation:
+#     cls = AutoModelForCausalLM
+# else:
+#     cls = AutoModelForSequenceClassification
 
-    model = cls.from_pretrained(
+    model = AutoPeftModelForCausalLM.from_pretrained(
         args.model_name,
         quantization_config=quantization_config,
         device_map=device_map,
@@ -80,7 +78,12 @@ def create_and_prepare_model(args, generation=False):
     if args.better_transformer:
         model.to_bettertransformer()
 
-    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+    if script_args.tokenizer_name is not None:
+        tokenizer_name = script_args.tokenizer_name
+    else:
+        tokenizer_name = script_args.model_name
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -110,44 +113,55 @@ def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
             return_dict_in_generate=True,
         )
         sequences = accelerator.gather(generation_output.sequences)
-    
+
     return sequences
 
 
-def preprocess_function(examples):
-    str_chosen = []
-    str_rejected = []
-    prompts = []
+def get_batch_logps(
+    logits: torch.FloatTensor,
+    labels: torch.LongTensor,
+    average_log_prob: bool = False,
+    label_pad_token_id=-100,
+) -> torch.FloatTensor:
+    """Compute the log probabilities of the given labels under the given logits.
 
-    for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
-        
-        prompts.append(prompt + "\nTL;DR:")
-        str_chosen.append(prompt + "\nTL;DR:" + chosen)
-        str_rejected.append(prompt + "\nTL;DR:" + rejected)
+    Args:
+        logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+        labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
+        average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
 
-    tokenized_chosen = tokenizer(
-        str_chosen, padding="max_length", truncation=True, max_length=script_args.seq_length, return_tensors="pt"
-    )
-    tokenized_rejected = tokenizer(
-        str_rejected, padding="max_length", truncation=True, max_length=script_args.seq_length, return_tensors="pt"
-    )
+    Returns:
+        A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+    """
+    if logits.shape[:-1] != labels.shape:
+        raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
 
-    tokenized_prompt = tokenizer(
-        prompts,
-        padding="max_length",
-        truncation=True,
-        max_length=script_args.seq_length,
-        return_tensors="pt",
-    )
+    # if not self.is_encoder_decoder:
+    labels = labels[:, 1:].clone()
+    logits = logits[:, :-1, :]
+    loss_mask = labels != label_pad_token_id
 
-    return {
-        "input_ids_prompt": tokenized_prompt["input_ids"],
-        "attention_mask_prompt": tokenized_prompt["attention_mask"],
-        "input_ids_chosen": tokenized_chosen["input_ids"],
-        "attention_mask_chosen": tokenized_chosen["attention_mask"],
-        "input_ids_rejected": tokenized_rejected["input_ids"],
-        "attention_mask_rejected": tokenized_rejected["attention_mask"],
-    }
+    # dummy token; we'll ignore the losses on these tokens later
+    labels[labels == label_pad_token_id] = 0
+
+    per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+    if average_log_prob:
+        return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+    else:
+        return (per_token_logps * loss_mask).sum(-1)
+
+
+def reward_model(accelerator, model, inputs):
+    with torch.no_grad():
+        policy_logits = model(inputs["input_ids"], attention_mask=inputs["attention_mask"]).logits.to(torch.float32)
+        policy_logps = get_batch_logps(policy_logits, inputs["labels"], average_log_prob=False)
+
+        with accelerator.unwrap_model(model).disable_adapter():
+            ref_logits = model(inputs["input_ids"], attention_mask=inputs["attention_mask"]).logits.to(torch.float32)
+            ref_logps = get_batch_logps(ref_logits, inputs["labels"], average_log_prob=False)
+
+    return policy_logps - ref_logps
 
 
 parser = HfArgumentParser(ScriptArguments)
@@ -158,23 +172,27 @@ accelerator = Accelerator()
 data_splits = [split for split in [script_args.train_split] if split is not None]
 relabel_dataset = DatasetDict()
 
-reward_model , _ = create_and_prepare_model(script_args, generation=False)
+# reward_model, _ = create_and_prepare_model(script_args, generation=False)
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
 for split in data_splits:
-
     dataset = load_dataset(script_args.dataset_name, split=split)
     dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
 
-    model, reward_model, dataloader = accelerator.prepare(model, reward_model, dataloader)
+    model, dataloader = accelerator.prepare(model, dataloader)
     model.eval()
-    reward_model.eval()
 
     output_dataset = {"prompt": [], "chosen": [], "rejected": []}
 
     generated_sequences = []
     for examples in tqdm(dataloader):
-        inputs = preprocess_function(examples)
+        inputs = tokenizer(
+            examples["prompt"],
+            padding=True,
+            truncation=True,
+            max_length=script_args.seq_length,
+            return_tensors="pt",
+        )
 
         with torch.no_grad():
             sequences = generate_from_prompt(
@@ -183,24 +201,25 @@ for split in data_splits:
                 model,
                 script_args,
             )
-        
+
             generated_sequences = sequences
             generated_attention_mask = torch.ones_like(generated_sequences)
             generated_attention_mask[generated_sequences == tokenizer.pad_token_id] = 0
-            rewards_generated = reward_model(
-                input_ids=generated_sequences.to(accelerator.device),
-                attention_mask=generated_attention_mask.to(accelerator.device),
-            )[0]
-    
+            rewards_generated = reward_model(accelerator, model, 
+            # rewards_generated = reward_model(
+            #     input_ids=generated_sequences.to(accelerator.device),
+            #     attention_mask=generated_attention_mask.to(accelerator.device),
+            # )[0]
+
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             rewards_generated = rewards_generated.view(-1, 2, rewards_generated.shape[-1])
             rewards_generated_even = rewards_generated[:, 0, :]
             rewards_generated_odd = rewards_generated[:, 1, :]
-        
+
             pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
-            #loop through each two generated texts
+# loop through each two generated texts
             for gen_text_even, gen_text_odd, label in zip(generated_texts[::2], generated_texts[1::2], pseudolabels):
                 prompt = gen_text_even.split("\nTL;DR:")[0]
                 gen_text_even = gen_text_even.split("\nTL;DR:")[1]
@@ -213,7 +232,7 @@ for split in data_splits:
                 else:
                     output_dataset["chosen"].append(gen_text_odd)
                     output_dataset["rejected"].append(gen_text_even)
-            
+
     ds_info = DatasetInfo("CarperAI/openai_summarize_unlabelled relabeled with a DPO finetuned Pythia 410m")
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
