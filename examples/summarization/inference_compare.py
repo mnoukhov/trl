@@ -199,10 +199,11 @@ for split in data_splits:
             generated_encodings = tokenizer(
                 generated_texts, padding=True, truncation=True, max_length=script_args.seq_length, return_tensors="pt"
             )
-
+            
             generated_labels = generated_encodings["input_ids"].clone()
             generated_labels[generated_labels == tokenizer.pad_token_id] = -100
-            prompt_lens = inputs["attention_mask"].sum(-1)
+            prompt_lens = inputs["attention_mask"].sum(-1) - 1
+
             for i, prompt_len in enumerate(prompt_lens):
                 generated_labels[i * 2 : i * 2 + 2, :prompt_len] = -100
 
@@ -221,9 +222,9 @@ for split in data_splits:
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
             for gen_text_even, gen_text_odd, label in zip(generated_texts[::2], generated_texts[1::2], pseudolabels):
-                prompt = gen_text_even.split("\nTL;DR:")[0] + "\nTL;DR:"
-                gen_text_even = gen_text_even.split("\nTL;DR:")[1].strip()
-                gen_text_odd = gen_text_odd.split("\nTL;DR:")[1].strip()
+                prompt = gen_text_even.split("\nTL;DR:", maxsplit=1)[0] + "\nTL;DR:"
+                gen_text_even = gen_text_even.split("\nTL;DR:", maxsplit=1)[1].strip()
+                gen_text_odd = gen_text_odd.split("\nTL;DR:", maxsplit=1)[1].strip()
 
                 output_dataset["prompt"].append(prompt)
                 if label >= 0:
