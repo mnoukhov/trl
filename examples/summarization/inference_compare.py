@@ -167,6 +167,7 @@ relabel_dataset = DatasetDict()
 
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
+
 for split in data_splits:
     dataset = load_dataset(script_args.dataset_name, split=split)
     dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
@@ -179,7 +180,7 @@ for split in data_splits:
     for examples in tqdm(dataloader):
         tokenizer.padding_side = "left"
         inputs = tokenizer(
-            examples["prompt"],
+            [prompt.strip() for prompt in examples["prompt"]],
             padding=True,
             truncation=True,
             max_length=script_args.seq_length,
@@ -195,17 +196,17 @@ for split in data_splits:
             )
 
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
-            
+
             generated_labels = generated_sequences.clone()
-            prompt_lens = inputs["attention_mask"].sum(-1) 
+            prompt_lens = inputs["attention_mask"].sum(-1)
             generated_encoding_attn_mask = torch.ones_like(generated_labels)
-            
+
             for i, prompt_len in enumerate(prompt_lens):
-                padding_len = (generated_sequences[i*2] == tokenizer.pad_token_id).sum().item()
-                generated_sequences[i*2] = torch.roll(generated_sequences[i*2], -padding_len)
-                generated_sequences[i*2+1] = torch.roll(generated_sequences[i*2+1], -padding_len)
-                generated_labels[i*2] = torch.roll(generated_labels[i*2], -padding_len)
-                generated_labels[i*2+1] = torch.roll(generated_labels[i*2+1], -padding_len)
+                padding_len = (generated_sequences[i * 2] == tokenizer.pad_token_id).sum().item()
+                generated_sequences[i * 2] = torch.roll(generated_sequences[i * 2], -padding_len)
+                generated_sequences[i * 2 + 1] = torch.roll(generated_sequences[i * 2 + 1], -padding_len)
+                generated_labels[i * 2] = torch.roll(generated_labels[i * 2], -padding_len)
+                generated_labels[i * 2 + 1] = torch.roll(generated_labels[i * 2 + 1], -padding_len)
                 generated_labels[i * 2 : i * 2 + 2, :prompt_len] = -100
 
             generated_labels[generated_labels == tokenizer.pad_token_id] = -100
@@ -225,11 +226,12 @@ for split in data_splits:
             pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
-            for gen_text_even, gen_text_odd, label, prompt in zip(generated_texts[::2], generated_texts[1::2], pseudolabels, examples["prompt"]):
-
+            for gen_text_even, gen_text_odd, label, prompt in zip(
+                generated_texts[::2], generated_texts[1::2], pseudolabels, examples["prompt"]
+            ):
                 gen_text_even = gen_text_even[len(prompt) :].strip()
                 gen_text_odd = gen_text_odd[len(prompt) :].strip()
-         
+
                 output_dataset["prompt"].append(prompt)
                 if label >= 0:
                     output_dataset["chosen"].append(gen_text_even)
