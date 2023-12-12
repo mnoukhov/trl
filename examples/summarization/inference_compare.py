@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -96,12 +97,10 @@ def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
         pad_token_id=model.config.pad_token_id,
     )
 
-    input_ids = prompt_ids
-    attention_mask = prompts_attention_mask
     with torch.no_grad():
         generation_output = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=prompt_ids,
+            attention_mask=prompts_attention_mask,
             generation_config=generation_config,
             return_dict_in_generate=True,
         )
@@ -162,14 +161,16 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 accelerator = Accelerator()
 
-data_splits = [split for split in [script_args.train_split] if split is not None]
+splits_names = {
+    "train": script_args.train_split,
+}
 relabel_dataset = DatasetDict()
 
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
 
-for split in data_splits:
-    dataset = load_dataset(script_args.dataset_name, split=split)
+for split, split_name in splits_names.items():
+    dataset = load_dataset(script_args.dataset_name, split=split_name)
     dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
 
     model, dataloader = accelerator.prepare(model, dataloader)
@@ -187,6 +188,7 @@ for split in data_splits:
             return_tensors="pt",
         )
 
+        # accelerator.print("generate")
         with torch.no_grad():
             generated_sequences = generate_from_prompt(
                 inputs["input_ids"].to(accelerator.device),
@@ -195,6 +197,7 @@ for split in data_splits:
                 script_args,
             )
 
+            # accelerator.print("decode")
             generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
 
             generated_labels = generated_sequences.clone()
@@ -218,14 +221,17 @@ for split in data_splits:
                 "labels": generated_labels.to(accelerator.device),
             }
 
+            # accelerator.print("rm")
             rewards_generated = reward_model(accelerator, model, reward_model_inputs)  # batch size
 
             rewards_generated_even = rewards_generated[::2]
             rewards_generated_odd = rewards_generated[1::2]
 
             pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
+            # accelerator.print("gather")
             pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
 
+            # accelerator.print("iterate")
             for gen_text_even, gen_text_odd, label, prompt in zip(
                 generated_texts[::2], generated_texts[1::2], pseudolabels, examples["prompt"]
             ):
@@ -244,3 +250,4 @@ for split in data_splits:
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
 relabel_dataset.save_to_disk(script_args.output_dir)
+relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir))
