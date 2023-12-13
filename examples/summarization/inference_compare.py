@@ -185,6 +185,7 @@ for split, split_name in splits_names.items():
             padding=True,
             truncation=True,
             max_length=script_args.seq_length,
+            pad_to_multiple_of=(8 if script_args.fp16 else None),
             return_tensors="pt",
         )
 

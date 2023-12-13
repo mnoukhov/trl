@@ -4,3 +4,4 @@ tokenizer_name: mnoukhov/pythia410m-tldr-sft
 dataset_name: arianhosseini/openai_summarize_unlabelled
 train_split: train[:20000]
 batch_size: 16
+fp16: True
