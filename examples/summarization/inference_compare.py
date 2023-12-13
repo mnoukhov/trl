@@ -37,11 +37,11 @@ class ScriptArguments:
     bf16: Optional[bool] = field(default=False)
     fp16: Optional[bool] = field(default=False)
     fp16_model: Optional[bool] = field(default=False)
-    seq_length: Optional[int] = field(default=560, metadata={"help": "Input sequence length"})
+    seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
     temperature: Optional[int] = field(default=0.7, metadata={"help": "Gen temperature"})
     do_sample: Optional[bool] = field(default=True)
-    max_new_tokens: Optional[int] = field(default=128, metadata={"help": "max new tokens"})
+    max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
 
 
 def create_and_prepare_model(args, generation=False):

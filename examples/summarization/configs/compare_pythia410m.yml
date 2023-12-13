@@ -5,3 +5,5 @@ dataset_name: arianhosseini/openai_summarize_unlabelled
 train_split: train[:20000]
 batch_size: 16
 fp16: True
+seq_length: 512
+max_new_tokens: 48
