@@ -39,9 +39,11 @@ class ScriptArguments:
     fp16_model: Optional[bool] = field(default=False)
     seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
-    temperature: Optional[int] = field(default=0.7, metadata={"help": "Gen temperature"})
+    temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     do_sample: Optional[bool] = field(default=True)
     max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
+
+    cache_dir: Optional[str] = field(default=None, metadata={"help": "cache dir"})
 
 
 def create_and_prepare_model(args, generation=False):
@@ -67,6 +69,7 @@ def create_and_prepare_model(args, generation=False):
         device_map=device_map,
         num_labels=1,
         torch_dtype=torch_dtype,
+        cache_dir=args.cache_dir,
     )
 
     if args.better_transformer:

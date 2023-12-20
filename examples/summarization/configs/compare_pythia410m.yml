@@ -7,3 +7,4 @@ batch_size: 16
 fp16: True
 seq_length: 512
 max_new_tokens: 48
+temperature: 1.0
