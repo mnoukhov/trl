@@ -1,5 +1,5 @@
 output_dir: /home/toolkit/huggingface/openai_summarize_generated_iter1
-model_name: mnoukhov/pythia410m-tldrprompt-dpo1b
+model_name: mnoukhov/pythia410m-tldrprompt-dpo1b-adapter
 tokenizer_name: mnoukhov/pythia410m-tldr-sft
 dataset_name: arianhosseini/openai_summarize_unlabelled
 train_split: train[:20000]
