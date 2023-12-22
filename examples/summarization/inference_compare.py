@@ -250,8 +250,11 @@ for split, split_name in splits_names.items():
                     output_dataset["chosen"].append(gen_text_odd)
                     output_dataset["rejected"].append(gen_text_even)
 
+    accelerator.wait_for_everyone()
+    # if accelerator.is_main_process:
     ds_info = DatasetInfo("CarperAI/openai_summarize_unlabelled relabeled with a DPO finetuned Pythia 410m")
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
-relabel_dataset.save_to_disk(script_args.output_dir)
-relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir))
+if accelerator.is_main_process:
+    relabel_dataset.save_to_disk(script_args.output_dir)
+    relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir))
