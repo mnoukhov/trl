@@ -28,7 +28,7 @@ class ScriptArguments:
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
     train_split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
-    eval_split: Optional[str] = field(default="test[:20]", metadata={"help": "the dataset name"})
+    # eval_split: Optional[str] = field(default="test[:20]", metadata={"help": "the dataset name"})
     load_in_8bit: Optional[bool] = field(default=False, metadata={"help": "load the model in 8 bits precision"})
     load_in_4bit: Optional[bool] = field(default=False, metadata={"help": "load the model in 4 bits precision"})
     better_transformer: Optional[bool] = field(default=False)
@@ -107,9 +107,8 @@ def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
             generation_config=generation_config,
             return_dict_in_generate=True,
         )
-        sequences = accelerator.gather(generation_output.sequences)
 
-    return sequences
+    return generation_output.sequences
 
 
 def get_batch_logps(
@@ -164,97 +163,103 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 accelerator = Accelerator()
 
-splits_names = {
-    "train": script_args.train_split,
-}
-relabel_dataset = DatasetDict()
-
 model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
+# for split, split_name in splits_names.items():
+dataset = load_dataset(script_args.dataset_name, split=script_args.train_split)
+dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
 
-for split, split_name in splits_names.items():
-    dataset = load_dataset(script_args.dataset_name, split=split_name)
-    dataloader = DataLoader(dataset, batch_size=script_args.batch_size)
+model, dataloader = accelerator.prepare(model, dataloader)
+model.eval()
 
-    model, dataloader = accelerator.prepare(model, dataloader)
-    model.eval()
+output_dataset = {"prompt": [], "chosen": [], "rejected": []}
 
-    output_dataset = {"prompt": [], "chosen": [], "rejected": []}
+for examples in tqdm(dataloader):
+    tokenizer.padding_side = "left"
+    inputs = tokenizer(
+        [prompt.strip() for prompt in examples["prompt"]],
+        padding=True,
+        truncation=True,
+        max_length=script_args.seq_length,
+        pad_to_multiple_of=(8 if script_args.fp16 else None),
+        return_tensors="pt",
+    )
 
-    for examples in tqdm(dataloader):
-        tokenizer.padding_side = "left"
-        inputs = tokenizer(
-            [prompt.strip() for prompt in examples["prompt"]],
-            padding=True,
-            truncation=True,
-            max_length=script_args.seq_length,
-            pad_to_multiple_of=(8 if script_args.fp16 else None),
-            return_tensors="pt",
+    # accelerator.print("generate")
+    with torch.no_grad():
+        output_sequences = generate_from_prompt(
+            inputs["input_ids"].to(accelerator.device),
+            inputs["attention_mask"].to(accelerator.device),
+            model,
+            script_args,
         )
 
-        # accelerator.print("generate")
-        with torch.no_grad():
-            generated_sequences = generate_from_prompt(
-                inputs["input_ids"].to(accelerator.device),
-                inputs["attention_mask"].to(accelerator.device),
-                model,
-                script_args,
-            )
+        # accelerator.print("decode")
 
-            # accelerator.print("decode")
-            generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
+        generated_sequences = output_sequences.clone()
+        generated_labels = output_sequences.clone()
+        prompt_lens = inputs["attention_mask"].sum(-1)
+        generated_encoding_attn_mask = torch.ones_like(generated_labels)
 
-            generated_labels = generated_sequences.clone()
-            prompt_lens = inputs["attention_mask"].sum(-1)
-            generated_encoding_attn_mask = torch.ones_like(generated_labels)
+        for i, prompt_len in enumerate(prompt_lens):
+            padding_len = (generated_sequences[i * 2] == tokenizer.pad_token_id).sum().item()
+            generated_sequences[i * 2] = torch.roll(generated_sequences[i * 2], -padding_len)
+            generated_sequences[i * 2 + 1] = torch.roll(generated_sequences[i * 2 + 1], -padding_len)
+            generated_labels[i * 2] = torch.roll(generated_labels[i * 2], -padding_len)
+            generated_labels[i * 2 + 1] = torch.roll(generated_labels[i * 2 + 1], -padding_len)
+            generated_labels[i * 2 : i * 2 + 2, :prompt_len] = -100
 
-            for i, prompt_len in enumerate(prompt_lens):
-                padding_len = (generated_sequences[i * 2] == tokenizer.pad_token_id).sum().item()
-                generated_sequences[i * 2] = torch.roll(generated_sequences[i * 2], -padding_len)
-                generated_sequences[i * 2 + 1] = torch.roll(generated_sequences[i * 2 + 1], -padding_len)
-                generated_labels[i * 2] = torch.roll(generated_labels[i * 2], -padding_len)
-                generated_labels[i * 2 + 1] = torch.roll(generated_labels[i * 2 + 1], -padding_len)
-                generated_labels[i * 2 : i * 2 + 2, :prompt_len] = -100
+        generated_labels[generated_labels == tokenizer.pad_token_id] = -100
+        generated_encoding_attn_mask[generated_sequences == tokenizer.pad_token_id] = 0
 
-            generated_labels[generated_labels == tokenizer.pad_token_id] = -100
-            generated_encoding_attn_mask[generated_sequences == tokenizer.pad_token_id] = 0
+        # reward_model_inputs = {
+        #     "input_ids": generated_sequences.to(accelerator.device),
+        #     "attention_mask": generated_encoding_attn_mask.to(accelerator.device),
+        #     "labels": generated_labels.to(accelerator.device),
+        # }
+        reward_model_inputs = {
+            "input_ids": generated_sequences,
+            "attention_mask": generated_encoding_attn_mask,
+            "labels": generated_labels,
+        }
 
-            reward_model_inputs = {
-                "input_ids": generated_sequences.to(accelerator.device),
-                "attention_mask": generated_encoding_attn_mask.to(accelerator.device),
-                "labels": generated_labels.to(accelerator.device),
-            }
+        accelerator.print("rm")
+        rewards_generated = reward_model(accelerator, model, reward_model_inputs)  # batch size
 
-            # accelerator.print("rm")
-            rewards_generated = reward_model(accelerator, model, reward_model_inputs)  # batch size
+        rewards_generated_even = rewards_generated[::2]
+        rewards_generated_odd = rewards_generated[1::2]
 
-            rewards_generated_even = rewards_generated[::2]
-            rewards_generated_odd = rewards_generated[1::2]
+        pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
+        accelerator.print("gather")
+        pseudolabels, output_sequences = accelerator.gather((pseudolabels, output_sequences))
 
-            pseudolabels = torch.sign(rewards_generated_even - rewards_generated_odd)
-            # accelerator.print("gather")
-            pseudolabels = accelerator.gather(pseudolabels).cpu().numpy()
+        generated_texts = tokenizer.batch_decode(output_sequences, skip_special_tokens=True)
 
-            # accelerator.print("iterate")
-            for gen_text_even, gen_text_odd, label, prompt in zip(
-                generated_texts[::2], generated_texts[1::2], pseudolabels, examples["prompt"]
-            ):
-                gen_text_even = gen_text_even[len(prompt) :].strip()
-                gen_text_odd = gen_text_odd[len(prompt) :].strip()
+        print("pseudos")
+        print(len(pseudolabels))
 
-                output_dataset["prompt"].append(prompt)
-                if label >= 0:
-                    output_dataset["chosen"].append(gen_text_even)
-                    output_dataset["rejected"].append(gen_text_odd)
-                else:
-                    output_dataset["chosen"].append(gen_text_odd)
-                    output_dataset["rejected"].append(gen_text_even)
+        # accelerator.print("iterate")
+        for gen_text_even, gen_text_odd, label, prompt in zip(
+            generated_texts[::2], generated_texts[1::2], pseudolabels, examples["prompt"]
+        ):
+            gen_text_even = gen_text_even[len(prompt) :].strip()
+            gen_text_odd = gen_text_odd[len(prompt) :].strip()
 
-    accelerator.wait_for_everyone()
-    # if accelerator.is_main_process:
-    ds_info = DatasetInfo("CarperAI/openai_summarize_unlabelled relabeled with a DPO finetuned Pythia 410m")
-    relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
+            output_dataset["prompt"].append(prompt)
+            if label >= 0:
+                output_dataset["chosen"].append(gen_text_even)
+                output_dataset["rejected"].append(gen_text_odd)
+            else:
+                output_dataset["chosen"].append(gen_text_odd)
+                output_dataset["rejected"].append(gen_text_even)
+
+accelerator.wait_for_everyone()
+# if accelerator.is_main_process:
+ds_info = DatasetInfo("CarperAI/openai_summarize_unlabelled relabeled with a DPO finetuned Pythia 410m")
+relabel_dataset = Dataset.from_dict(output_dataset, info=ds_info)
 
 if accelerator.is_main_process:
+    accelerator.print(relabel_dataset["train"])
+    print("pushing")
     relabel_dataset.save_to_disk(script_args.output_dir)
-    relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir))
+    relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
