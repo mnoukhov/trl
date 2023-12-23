@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import yaml
 from accelerate.commands import launch
+from generate_vllm import generate_vllm_args_dict
 from haven import haven_wizard as hw
 
 
@@ -41,6 +42,10 @@ def run_exp(exp_dict, savedir, args):
         accelerate_launch("evaluate_rouge.py", exp_dict, args)
     elif exp_name.startswith("pseudo"):
         accelerate_launch("inference_pseudolabel.py", exp_dict, args)
+    elif exp_name.startswith("vllm"):
+        exp_dict.pop("save_strategy", None)
+        exp_dict["num_gpus"] = args.gpus
+        generate_vllm_args_dict(exp_dict)
     elif exp_name.startswith("compare"):
         exp_dict.pop("save_strategy", None)
         accelerate_launch("inference_compare.py", exp_dict, args)
