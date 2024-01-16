@@ -77,13 +77,18 @@ def generate_vllm(script_args):
 
     generations = llm.generate(prompts, sampling_params)
 
+    print(f"generated {len(generations)} samples")
+
     def dataset_generator():
         for gen in generations:
-            yield {
-                "prompt": gen.prompt,
-                "chosen": gen.outputs[0].text,
-                "rejected": gen.outputs[1].text,
-            }
+            if len(gen.outputs) == 2:
+                yield {
+                    "prompt": gen.prompt,
+                    "chosen": gen.outputs[0].text,
+                    "rejected": gen.outputs[1].text,
+                }
+            else:
+                print("skipping gen, only 1 output")
 
     ds_info = DatasetInfo(
         f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"

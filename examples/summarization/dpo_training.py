@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import bitsandbytes as bnb
 import torch
 import torch.nn as nn
+import wandb
 from accelerate import Accelerator
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -35,7 +36,6 @@ from transformers import (
 )
 from transformers.trainer_utils import EvalLoopOutput, get_last_checkpoint
 
-import wandb
 from trl import DPOTrainer
 from trl.trainer.utils import pad_to_length
 
@@ -150,7 +150,7 @@ class DPOTrainerWithGold(DPOTrainer):
     ):
         # self.generate_during_eval = kwargs.pop("generate_during_eval", False)
         super().__init__(*args, **kwargs)
-        
+
         self.gold_model = self.accelerator.prepare_model(gold_model, evaluation_mode=True)
         if generate_kwargs is not None:
             self.generate_kwargs = generate_kwargs
@@ -360,8 +360,7 @@ def create_and_prepare_model(args):
     if getattr(model.config, "pad_token_id", None) is None:
         print("Setting pad token id to eos token id")
         model.config.pad_token_id = model.config.eos_token_id
-    
-    
+
     if script_args.gold_in_8bit or script_args.gold_in_4bit:
         gold_quantization_config = BitsAndBytesConfig(
             load_in_8bit=script_args.gold_in_8bit, load_in_4bit=script_args.gold_in_4bit
@@ -387,8 +386,6 @@ def create_and_prepare_model(args):
     if getattr(gold_model.config, "pad_token_id", None) is None:
         print("Setting pad token id to eos token id")
         gold_model.config.pad_token_id = gold_model.config.eos_token_id
-    
-
 
     return model, tokenizer, gold_model
 
