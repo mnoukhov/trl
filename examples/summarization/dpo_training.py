@@ -156,6 +156,8 @@ class ScriptArguments:
     mode: Optional[str] = field(default="train")
     eval_first_step: Optional[bool] = field(default=True)
 
+    cache_dir: Optional[str] = field(default=None, metadata={"help": "the cache directory"})
+
 
 def find_all_linear_names(args, model):
     cls = bnb.nn.Linear4bit if args.load_in_4bit else (bnb.nn.Linear8bitLt if args.load_in_8bit else torch.nn.Linear)
@@ -204,6 +206,7 @@ def create_and_prepare_model(args):
         quantization_config=quantization_config,
         device_map=device_map,
         torch_dtype=dtype,
+        cache_dir=args.cache_dir,
     )
 
     model.config.torch_dtype = dtype
@@ -284,6 +287,7 @@ def create_and_prepare_gold_model(args):
         quantization_config=gold_quantization_config,
         torch_dtype=torch_dtype,
         device_map=gold_device_map,
+        cache_dir=script_args.cache_dir,
     )
 
     if getattr(gold_model.config, "pad_token_id", None) is None:
@@ -299,14 +303,14 @@ def strip_prompt(examples):
 
 
 def create_and_prepare_dataset(args):
-    train_dataset = load_dataset(args.dataset_name, split=args.train_split)
-    eval_dataset = load_dataset(args.dataset_name, split=args.eval_split)
+    train_dataset = load_dataset(args.dataset_name, split=args.train_split, cache_dir=args.cache_dir)
+    eval_dataset = load_dataset(args.dataset_name, split=args.eval_split, cache_dir=args.cache_dir)
 
     if args.pseudo_dataset_name is not None:
         all_train_datasets = [train_dataset]
         pseudo_dataset_names = args.pseudo_dataset_name.split(",")
         for ds_name in pseudo_dataset_names:
-            dataset = load_dataset(ds_name, split=args.pseudo_dataset_split)
+            dataset = load_dataset(ds_name, split=args.pseudo_dataset_split, cache_dir=args.cache_dir)
             dataset = dataset.map(strip_prompt, batched=True)
             all_train_datasets.append(dataset)
 
