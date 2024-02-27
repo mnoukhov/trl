@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import bitsandbytes as bnb
 import torch
 from accelerate import Accelerator
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset, load_from_disk
 from peft import AutoPeftModelForCausalLM, LoraConfig, PeftConfig, get_peft_model, prepare_model_for_kbit_training
 from peft.tuners.lora import LoraLayer
 from torch.utils.data import DataLoader
@@ -154,6 +154,10 @@ class ScriptArguments:
     )
     gold_eval_split: Optional[str] = field(default="valid")
     mode: Optional[str] = field(default="train")
+    num_gen_per_prompt: Optional[int] = field(
+        default=2, metadata={"help": "the number of generations per prompt if doing relabelling"}
+    )
+    relabel_strategy: Optional[str] = field(default="min_max")
     eval_first_step: Optional[bool] = field(default=True)
 
     cache_dir: Optional[str] = field(default=None, metadata={"help": "the cache directory"})
@@ -663,6 +667,8 @@ if __name__ == "__main__":
         results = dpo_trainer.evaluate()
         print(results)
     elif script_args.mode == "relabel":
+        num_gen_per_prompt = script_args.num_gen_per_prompt
+        relabel_strategy = script_args.relabel_strategy
 
         def relabel_with_preds(batch: Dict[str, List]):
             relabel_batch = {
@@ -670,22 +676,27 @@ if __name__ == "__main__":
                 "chosen": [],
                 "rejected": [],
             }
-            for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(
-                batch["prompt"],
-                batch["chosen"],
-                batch["rejected"],
-                batch["pred_chosen"],
-                batch["pred_rejected"],
-            ):
-                relabel_batch["prompt"].append(prompt)
-                if pred_chosen >= pred_rejected:
-                    relabel_batch["chosen"].append(chosen)
-                    relabel_batch["rejected"].append(rejected)
-                else:
-                    relabel_batch["chosen"].append(rejected)
-                    relabel_batch["rejected"].append(chosen)
 
-            return relabel_batch
+            assert len(set(batch["prompt"])) == 1, "All prompts should be the same for this batch"
+            completion_scores = []
+            all_completions = []
+            for i in range(len(batch["prompt"])):
+                completion_scores.extend([batch["pred_chosen"][i], batch["pred_rejected"][i]])
+                all_completions.extend([batch["chosen"][i], batch["rejected"][i]])
+            completion_scores = torch.tensor(completion_scores)
+
+            if relabel_strategy == "min_max":
+                rejected_idx = torch.argmin(completion_scores)
+                chosen_idx = torch.argmax(completion_scores)
+            elif relabel_strategy == "max_and_second_max":
+                sorted_scores, sorted_indices = torch.sort(completion_scores)
+                chosen_idx = sorted_indices[-1]
+                rejected_idx = sorted_indices[-2]
+            else:
+                raise ValueError(f"Relabel strategy {relabel_strategy} not recognized")
+            relabel_batch["prompt"].append(batch["prompt"][0])
+            relabel_batch["chosen"].append(all_completions[chosen_idx])
+            relabel_batch["rejected"].append(all_completions[rejected_idx])
 
         dpo_trainer.accelerator.print(f"Prediction {script_args.eval_split}")
         preds, _, metrics = dpo_trainer.predict(eval_dataset)
@@ -698,15 +709,16 @@ if __name__ == "__main__":
             reference_rejected_logps,
         ) = preds
         dpo_trainer.accelerator.print(f"metrics {metrics}")
-
         if dpo_trainer.accelerator.is_local_main_process:
-            print("Relabelling Dataset and Saving")
             dataset = load_dataset(script_args.dataset_name, split=script_args.eval_split)
             dataset = dataset.add_column("pred_chosen", chosen_rewards)
             dataset = dataset.add_column("pred_rejected", rejected_rewards)
 
             relabel_dataset = dataset.map(
-                relabel_with_preds, batched=True, remove_columns=["pred_chosen", "pred_rejected"]
+                relabel_with_preds,
+                batched=True,
+                remove_columns=["pred_chosen", "pred_rejected"],
+                batch_size=int(num_gen_per_prompt / 2),
             )
 
             relabel_dataset._info.description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
