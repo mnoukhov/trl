@@ -44,7 +44,7 @@ import wandb
 from trl import DPOTrainer
 from trl.trainer.utils import pad_to_length
 
-from data_relabel_strategy import min_max
+from data_relabel_strategy import min_max, top_two
 
 
 # Define and parse arguments.
@@ -312,6 +312,7 @@ def create_and_prepare_dataset(args):
 
     strategy_to_func = {
         "min_max": min_max,
+        "top_two": top_two,
     }
 
     if not os.path.exists(args.dataset_name):
