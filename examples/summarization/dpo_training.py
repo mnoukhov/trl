@@ -44,6 +44,8 @@ import wandb
 from trl import DPOTrainer
 from trl.trainer.utils import pad_to_length
 
+from data_relabel_strategy import min_max
+
 
 # Define and parse arguments.
 @dataclass
@@ -307,15 +309,28 @@ def strip_prompt(examples):
 
 
 def create_and_prepare_dataset(args):
-    train_dataset = load_dataset(args.dataset_name, split=args.train_split, cache_dir=args.cache_dir)
-    eval_dataset = load_dataset(args.dataset_name, split=args.eval_split, cache_dir=args.cache_dir)
+
+    strategy_to_func = {
+        "min_max": min_max,
+    }
+
+    if not os.path.exists(args.dataset_name):
+        train_dataset = load_dataset(args.dataset_name, split=args.train_split, cache_dir=args.cache_dir)
+        eval_dataset = load_dataset(args.dataset_name, split=args.eval_split, cache_dir=args.cache_dir)
+    else:
+        train_dataset = load_from_disk(args.dataset_name)["train"]
+        eval_dataset = load_from_disk(args.dataset_name)["train"]
 
     if args.pseudo_dataset_name is not None:
         all_train_datasets = [train_dataset]
         pseudo_dataset_names = args.pseudo_dataset_name.split(",")
         for ds_name in pseudo_dataset_names:
-            dataset = load_dataset(ds_name, split=args.pseudo_dataset_split, cache_dir=args.cache_dir)
+            if not os.path.exists(ds_name):
+                dataset = load_dataset(ds_name, split=args.pseudo_dataset_split, cache_dir=args.cache_dir)
+            else:
+                dataset = load_from_disk(ds_name)["train"]
             dataset = dataset.map(strip_prompt, batched=True)
+            dataset = dataset.map(strategy_to_func[args.relabel_strategy], batched=True)
             all_train_datasets.append(dataset)
 
         train_dataset = concatenate_datasets(all_train_datasets)
@@ -667,7 +682,8 @@ if __name__ == "__main__":
         results = dpo_trainer.evaluate()
         print(results)
     elif script_args.mode == "relabel":
-        num_gen_per_prompt = script_args.num_gen_per_prompt
+        # num_gen_per_prompt = script_args.num_gen_per_prompt
+        num_gen_per_prompt = len(eval_dataset["completions"][0])
         relabel_strategy = script_args.relabel_strategy
 
         def relabel_with_preds(batch: Dict[str, List]):
@@ -697,9 +713,58 @@ if __name__ == "__main__":
             relabel_batch["prompt"].append(batch["prompt"][0])
             relabel_batch["chosen"].append(all_completions[chosen_idx])
             relabel_batch["rejected"].append(all_completions[rejected_idx])
+            return relabel_batch
 
         dpo_trainer.accelerator.print(f"Prediction {script_args.eval_split}")
-        preds, _, metrics = dpo_trainer.predict(eval_dataset)
+        print(eval_dataset)
+        # eval_dataset has rows with prompt, list of completions
+        # new_dataset should have rows with prompt, list of completions, list of scores
+
+        def make_preds_scores_list(batch):
+            """
+            Make two column to rows with query, list of completions, list of scores
+            batch is just one example with all its completions
+            """
+            data = {
+                "prompt": [],
+                "completions": [],
+                "scores": [],
+            }
+            assert len(set(batch["prompt"])) == 1, "All prompts should be the same for this batch"
+            data["prompt"].append(batch["prompt"][0])
+            completions = []
+            scores = []
+            for i in range(len(batch["prompt"])):
+                completions.extend([batch["chosen"][i], batch["rejected"][i]])
+                scores.extend([batch["pred_chosen"][i], batch["pred_rejected"][i]])
+            data["completions"].append(completions)
+            data["scores"].append(scores)
+            return data
+
+        def make_two_columns(batch):
+            """
+            Make two columns from a list of completions
+
+            """
+            two_column_batch = {
+                "prompt": [],
+                "chosen": [],
+                "rejected": [],
+            }
+            for i in range(len(batch["prompt"])):
+                for j in range(0, len(batch["completions"][i]), 2):
+                    two_column_batch["prompt"].append(batch["prompt"][i])
+                    two_column_batch["chosen"].append(batch["completions"][i][j])
+                    two_column_batch["rejected"].append(batch["completions"][i][j + 1])
+            return two_column_batch
+
+        eval_dataset_two_col = eval_dataset.map(
+            make_two_columns, batched=True, remove_columns=eval_dataset.column_names
+        )
+        print(eval_dataset_two_col)
+
+        # add scores
+        preds, _, metrics = dpo_trainer.predict(eval_dataset_two_col)
         (
             chosen_rewards,
             rejected_rewards,
@@ -710,21 +775,20 @@ if __name__ == "__main__":
         ) = preds
         dpo_trainer.accelerator.print(f"metrics {metrics}")
         if dpo_trainer.accelerator.is_local_main_process:
-            dataset = load_dataset(script_args.dataset_name, split=script_args.eval_split)
-            dataset = dataset.add_column("pred_chosen", chosen_rewards)
-            dataset = dataset.add_column("pred_rejected", rejected_rewards)
+            eval_dataset_two_col = eval_dataset_two_col.add_column("pred_chosen", chosen_rewards)
+            eval_dataset_two_col = eval_dataset_two_col.add_column("pred_rejected", rejected_rewards)
 
-            relabel_dataset = dataset.map(
-                relabel_with_preds,
+            list_dataset = eval_dataset_two_col.map(
+                make_preds_scores_list,
                 batched=True,
-                remove_columns=["pred_chosen", "pred_rejected"],
+                remove_columns=eval_dataset_two_col.column_names,
                 batch_size=int(num_gen_per_prompt / 2),
             )
-
-            relabel_dataset._info.description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
+            print(list_dataset)
+            list_dataset._info.description = f"{script_args.dataset_name} scored with {script_args.model_name}"
 
         if dpo_trainer.accelerator.is_local_main_process:
             print("Saving")
-            relabel_dataset.save_to_disk(script_args.output_dir)
+            list_dataset.save_to_disk(script_args.output_dir)
             print("Pushing")
-            relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir), split=script_args.eval_split)
+            list_dataset.push_to_hub(os.path.basename(script_args.output_dir), split=script_args.eval_split)
