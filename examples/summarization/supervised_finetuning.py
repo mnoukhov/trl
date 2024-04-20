@@ -92,7 +92,6 @@ class ScriptArguments:
 
     output_dir: Optional[str] = field(default="./results", metadata={"help": "the output directory"})
     output_model_name: Optional[str] = field(default=None, metadata={"help": "the model pushed to hub"})
-    log_freq: Optional[int] = field(default=1, metadata={"help": "the logging frequency"})
     logging_steps: Optional[int] = field(default=10, metadata={"help": "the number of logging steps"})
     eval_steps: Optional[int] = field(default=1000, metadata={"help": "the number of steps to eval at"})
     save_steps: Optional[int] = field(default=1000, metadata={"help": "the number of steps to save at"})
@@ -100,7 +99,6 @@ class ScriptArguments:
     seed: Optional[int] = field(default=0)
     just_eval: Optional[bool] = field(default=False)
     resume_from_checkpoint: Optional[str] = field(default=None)
-
 
 
 def chars_token_ratio(dataset, tokenizer, nb_examples=400):
@@ -297,10 +295,10 @@ if __name__ == "__main__":
             else:
                 model_cls = AutoPeftModelForCausalLM
 
-            model = model_cls.from_pretrained(
-                output_dir, device_map="auto", torch_dtype=trainer.model.config.torch_dtype
-            )
-            model = model.merge_and_unload()
+            # model = model_cls.from_pretrained(
+            #     output_dir, device_map="auto", torch_dtype=trainer.model.config.torch_dtype
+            # )
+            model = trainer.model.merge_and_unload()
 
             output_merged_dir = os.path.join(args.output_dir, "final_merged_checkpoint")
             model.save_pretrained(output_merged_dir, safe_serialization=True)
