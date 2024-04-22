@@ -15,6 +15,7 @@
 # import random
 import math
 import os
+import random
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -37,6 +38,7 @@ from transformers import (
     PreTrainedTokenizerBase,
     TrainerCallback,
     TrainingArguments,
+    AutoModel,
 )
 from transformers.trainer_utils import get_last_checkpoint
 
@@ -45,6 +47,8 @@ from trl import DPOTrainer
 from trl.trainer.utils import pad_to_length
 
 from data_relabel_strategy import min_max, top_two
+
+from handbook_data import apply_chat_template, setup_chat_format
 
 
 # Define and parse arguments.
@@ -60,7 +64,7 @@ class ScriptArguments:
     )
     train_split: Optional[str] = field(default="train", metadata={"help": "the dataset split to train on"})
     eval_split: Optional[str] = field(
-        default="test", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
+        default="test[:10]", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
     )
     beta: Optional[float] = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
 
@@ -97,8 +101,10 @@ class ScriptArguments:
 
     # training parameters
     optimizer_type: Optional[str] = field(default="adamw_torch", metadata={"help": "the optimizer type"})
-    warmup_steps: Optional[int] = field(default=150)
+    warmup_steps: Optional[int] = field(default=0)
+    warmup_ratio: Optional[float] = field(default=0.1)
     learning_rate: Optional[float] = field(default=1e-3, metadata={"help": "optimizer learning rate"})
+    lr_scheduler_type: Optional[str] = field(default="cosine", metadata={"help": "the learning rate scheduler type"})
     per_device_train_batch_size: Optional[int] = field(default=4, metadata={"help": "batch size per device"})
     per_device_eval_batch_size: Optional[int] = field(default=8, metadata={"help": "batch size per device"})
     gradient_accumulation_steps: Optional[int] = field(
@@ -118,7 +124,7 @@ class ScriptArguments:
     # instrumentation
     seed: Optional[int] = field(default=0)
     output_dir: Optional[str] = field(default="results", metadata={"help": "the output directory"})
-    logging_steps: Optional[int] = field(default=100, metadata={"help": "the number of update steps between two logs"})
+    logging_steps: Optional[int] = field(default=1, metadata={"help": "the number of update steps between two logs"})
     log_n_samples_during_eval: Optional[int] = field(default=100)
     eval_steps: Optional[int] = field(default=None, metadata={"help": "the number of steps to eval at"})
     save_steps: Optional[int] = field(default=1000, metadata={"help": "the number of steps to save at"})
@@ -287,8 +293,8 @@ def create_and_prepare_gold_model(args):
         torch_dtype = torch.float16
     else:
         torch_dtype = torch.float32
-
-    gold_model = AutoModelForSequenceClassification.from_pretrained(
+    gold_model_class = AutoModel if "ultrafeedback" in args.dataset_name else AutoModelForSequenceClassification
+    gold_model = gold_model_class.from_pretrained(
         script_args.gold_model_name,
         quantization_config=gold_quantization_config,
         torch_dtype=torch_dtype,
@@ -323,13 +329,13 @@ def create_and_prepare_dataset(args):
         eval_dataset = load_from_disk(args.dataset_name)["train"]
 
     if args.pseudo_dataset_name is not None:
-        all_train_datasets = [train_dataset]
+        all_train_datasets = [train_dataset] if len(train_dataset) > 1 else []
         pseudo_dataset_names = args.pseudo_dataset_name.split(",")
         for ds_name in pseudo_dataset_names:
             if not os.path.exists(ds_name):
                 dataset = load_dataset(ds_name, split=args.pseudo_dataset_split, cache_dir=args.cache_dir)
             else:
-                dataset = load_from_disk(ds_name)["train"]
+                dataset = load_from_disk(ds_name)  # ["train"]
             dataset = dataset.map(strip_prompt, batched=True)
             dataset = dataset.map(strategy_to_func[args.relabel_strategy], batched=True)
             all_train_datasets.append(dataset)
@@ -337,6 +343,32 @@ def create_and_prepare_dataset(args):
         train_dataset = concatenate_datasets(all_train_datasets)
 
     return train_dataset, eval_dataset
+
+
+def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
+    original_columns = dataset.column_names
+
+    def preprocess_func(examples):
+        return_batch = {
+            "prompt": [],
+            "chosen": [],
+            "rejected": [],
+        }
+        for i in range(len(examples["prompt"])):
+
+            prompt_message = examples["chosen"][i][:-1]
+            chosen_messages = examples["chosen"][i][-1:]
+            rejected_messages = examples["rejected"][i][-1:]
+            return_batch["chosen"].append(tokenizer.apply_chat_template(chosen_messages, tokenize=False))
+            return_batch["rejected"].append(tokenizer.apply_chat_template(rejected_messages, tokenize=False))
+            return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
+        return return_batch
+
+    dataset = dataset.map(preprocess_func, batched=True, num_proc=num_proc, remove_columns=original_columns)
+    for index in random.sample(range(len(dataset)), 3):
+        print(f"Sample {index} of the processed dataset:\n\n{dataset[index]}")
+
+    return dataset
 
 
 @dataclass
@@ -400,6 +432,7 @@ class GoldModelRewardCallback(TrainerCallback):
         accelerator,
         max_length,
         max_prompt_length,
+        gold_dataset_name,
         log_n_samples_during_eval=0,
         generation_config=None,
     ):
@@ -413,6 +446,7 @@ class GoldModelRewardCallback(TrainerCallback):
             max_prompt_length=max_prompt_length,
             max_length=max_length,
             prompt_field="prompt",
+            target_field="chosen" if "ultrafeedback" in gold_dataset_name else "label",
         )
         dataloader_params = {
             "batch_size": args.eval_batch_size,
@@ -503,6 +537,9 @@ class GoldModelRewardCallback(TrainerCallback):
 
         self.completed_step = state.global_step
 
+        # save checkpoint
+        model.save_pretrained(os.path.join(args.output_dir, f"gold_eval_ckpt_{state.global_step}"))
+
     def get_batch_samples(self, model, tokenizer, input_ids, attention_mask, return_ids=False) -> Tuple[str, str]:
         """Reduce inputs to unseen prompts, and maximum batch size if necessary
         Generate samples from the model and reference model for the given batch of inputs."""
@@ -519,11 +556,6 @@ class GoldModelRewardCallback(TrainerCallback):
                 attention_mask=attention_mask,
                 generation_config=self.generation_config,
             )
-        # else:
-        #     reference_output = self.ref_model.generate(
-        #         **inputs,
-        #         generation_config=self.generation_config,
-        #     )
 
         policy_output = pad_to_length(policy_output, self.max_length, tokenizer.pad_token_id)
         policy_output_decoded = tokenizer.batch_decode(policy_output, skip_special_tokens=True)
@@ -576,6 +608,9 @@ if __name__ == "__main__":
     # 1. load a pretrained model
     model, tokenizer = create_and_prepare_model(script_args)
 
+    if "ultrafeedback" in script_args.dataset_name:
+        model, tokenizer = setup_chat_format(model, tokenizer)
+
     if script_args.ignore_bias_buffers:
         # torch distributed hack
         model._ddp_params_and_buffers_to_ignore = [
@@ -583,6 +618,18 @@ if __name__ == "__main__":
         ]
 
     train_dataset, eval_dataset = create_and_prepare_dataset(script_args)
+
+    if "ultrafeedback" in script_args.dataset_name:
+        eval_dataset = prepare_ultrafeedback_dataset(script_args, eval_dataset, tokenizer)
+
+        if script_args.pseudo_dataset_name is None:
+            train_dataset = prepare_ultrafeedback_dataset(script_args, train_dataset, tokenizer)
+
+    # print train samples
+    for index in random.sample(range(len(train_dataset)), 3):
+        print(f"Sample {index} of the processed dataset:")
+        for key in train_dataset.column_names:
+            print(f"{key}: {train_dataset[index][key]}")
 
     # 4. initialize training arguments:
     training_args = TrainingArguments(
@@ -602,10 +649,12 @@ if __name__ == "__main__":
         save_steps=script_args.save_steps,
         optim=script_args.optimizer_type,
         warmup_steps=script_args.warmup_steps,
+        warmup_ratio=script_args.warmup_ratio,
         report_to=script_args.report_to,
         bf16=script_args.bf16,
         fp16=script_args.fp16,
         ddp_find_unused_parameters=(script_args.gradient_checkpointing),
+        gradient_checkpointing_kwargs={"use_reentrant": False} if script_args.gradient_checkpointing else None,
     )
 
     # 5. initialize the DPO trainer
@@ -630,8 +679,10 @@ if __name__ == "__main__":
             script_args.gold_dataset_name,
             split=script_args.gold_eval_split,
         )
-
-        gold_eval_dataset = gold_eval_dataset.map(strip_prompt, batched=True)
+        if "ultrafeedback" in script_args.gold_dataset_name:
+            gold_eval_dataset = prepare_ultrafeedback_dataset(script_args, gold_eval_dataset, tokenizer)
+        else:
+            gold_eval_dataset = gold_eval_dataset.map(strip_prompt, batched=True)
 
         if script_args.generate_greedy:
             generation_config = GenerationConfig(
@@ -660,6 +711,7 @@ if __name__ == "__main__":
             dpo_trainer.accelerator,
             script_args.max_length,
             script_args.max_prompt_length,
+            script_args.gold_dataset_name,
             script_args.log_n_samples_during_eval,
             generation_config,
         )
@@ -677,8 +729,11 @@ if __name__ == "__main__":
 
     # 6. train
     if script_args.mode == "train":
+        # results = dpo_trainer.evaluate()
         last_checkpoint = get_last_checkpoint(script_args.output_dir)
+        dpo_trainer.save_model(output_dir=script_args.output_dir)
         dpo_trainer.train(resume_from_checkpoint=last_checkpoint)
+        dpo_trainer.save_model(output_dir=os.path.join(script_args.output_dir, "final_ckpt"))
     elif script_args.mode == "eval":
         results = dpo_trainer.evaluate()
         print(results)
@@ -718,6 +773,7 @@ if __name__ == "__main__":
 
         dpo_trainer.accelerator.print(f"Prediction {script_args.eval_split}")
         print(eval_dataset)
+        print(num_gen_per_prompt)
         # eval_dataset has rows with prompt, list of completions
         # new_dataset should have rows with prompt, list of completions, list of scores
 
@@ -753,6 +809,10 @@ if __name__ == "__main__":
                 "rejected": [],
             }
             for i in range(len(batch["prompt"])):
+                if len(batch["completions"][i]) != num_gen_per_prompt:
+                    print(batch["prompt"][i])
+                    print(batch["completions"][i])
+                    continue
                 for j in range(0, len(batch["completions"][i]), 2):
                     two_column_batch["prompt"].append(batch["prompt"][i])
                     two_column_batch["chosen"].append(batch["completions"][i][j])

@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from typing import Optional
+import random
 
 import torch
 from accelerate import Accelerator
@@ -15,6 +16,8 @@ from transformers import (
     HfArgumentParser,
 )
 from vllm import LLM, SamplingParams
+
+from handbook_data import setup_chat_format
 
 
 @dataclass
@@ -59,8 +62,8 @@ def prepare_vllm_model(script_args):
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if getattr(model.config, "pad_token_id", None) is None:
-        model.config.pad_token_id = model.config.eos_token_id
+    # if getattr(model.config, "pad_token_id", None) is None:
+    #     model.config.pad_token_id = model.config.eos_token_id
 
     tokenizer.padding_side = "left"
 
@@ -80,6 +83,32 @@ def prepare_vllm_model(script_args):
     llm.set_tokenizer(tokenizer)
 
     return llm, tokenizer
+
+
+def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
+    original_columns = dataset.column_names
+
+    def preprocess_func(examples):
+        return_batch = {
+            "prompt": [],
+            "chosen": [],
+            "rejected": [],
+        }
+        for i in range(len(examples["prompt"])):
+
+            prompt_message = examples["chosen"][i][:-1]
+            chosen_messages = examples["chosen"][i][-1:]
+            rejected_messages = examples["rejected"][i][-1:]
+            return_batch["chosen"].append(tokenizer.apply_chat_template(chosen_messages, tokenize=False))
+            return_batch["rejected"].append(tokenizer.apply_chat_template(rejected_messages, tokenize=False))
+            return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
+        return return_batch
+
+    dataset = dataset.map(preprocess_func, batched=True, num_proc=num_proc, remove_columns=original_columns)
+    for index in random.sample(range(len(dataset)), 3):
+        print(f"Sample {index} of the processed dataset:\n\n{dataset[index]}")
+
+    return dataset
 
 
 def create_and_prepare_model(args, generation=False):
@@ -171,13 +200,20 @@ splits_names = {
 }
 relabel_dataset = DatasetDict()
 
-model, tokenizer = create_and_prepare_model(script_args, generation=True)
-llm, _ = prepare_vllm_model(script_args)
+# model, tokenizer = create_and_prepare_model(script_args, generation=True)
 
+llm, tokenizer = prepare_vllm_model(script_args)
+
+if "ultrafeedback" in script_args.dataset_name:
+    _, tokenizer = setup_chat_format(None, tokenizer)
 
 for split, split_name in splits_names.items():
     dataset = load_dataset(script_args.dataset_name, split=split_name)
+    if "ultrafeedback" in script_args.dataset_name:
+        dataset = prepare_ultrafeedback_dataset(script_args, dataset, tokenizer, num_proc=2)
     prompts = dataset["prompt"]
+    print(f"Split: {split}, Number of prompts: {len(prompts)}")
+    print(prompts[:3])
 
     generations = generate_with_llm(llm, prompts, script_args)
 
@@ -194,7 +230,7 @@ for split, split_name in splits_names.items():
         output_dataset["prompt"].append(prompt)
         output_dataset["completions"].append(completions)
 
-    ds_info = DatasetInfo(f"CarperAI/openai_summarize_unlabelled {script_args.num_gen} generations per prompt.")
+    ds_info = DatasetInfo(f"{script_args.dataset_name} {script_args.num_gen} generations per prompt.")
     relabel_dataset[split] = Dataset.from_dict(output_dataset, split=split, info=ds_info)
 
 relabel_dataset.save_to_disk(script_args.output_dir)

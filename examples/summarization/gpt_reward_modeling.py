@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 
@@ -34,7 +35,7 @@ from transformers import (
 )
 
 from trl import RewardTrainer
-
+from handbook_data import apply_chat_template, setup_chat_format
 
 tqdm.pandas()
 builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
@@ -54,11 +55,15 @@ class GPTRewardTrainer(RewardTrainer):
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
         )[0]
+        # print(rewards.shape)
         bsz = rewards.size(0)
         jidx = torch.arange(0, bsz, 2)
         kidx = jidx + 1
+
         rewards_chosen = rewards[jidx]
+
         rewards_rejected = rewards[kidx]
+
         loss = -nn.functional.logsigmoid(rewards_chosen - rewards_rejected).mean()
         if return_outputs:
             return loss, {
@@ -84,6 +89,7 @@ class GPTRewardDataCollatorWithPadding:
         return_tensors (`str`, `optional`, defaults to `"pt"`):
             The tensor type to use.
     """
+
     tokenizer: PreTrainedTokenizerBase
     padding: Union[bool, str] = True
     max_length: Optional[int] = None
@@ -93,6 +99,8 @@ class GPTRewardDataCollatorWithPadding:
     def __call__(self, features):
         # features_chosen = []
         # features_rejected = []
+        # print(features[0]["input_ids_rejected"])
+        # print(features[0]["input_ids_chosen"])
         merged_features = []
         for feature in features:
             # check if the keys are named as expected
@@ -148,7 +156,7 @@ class ScriptArguments:
     )
     dataset_text_field: Optional[str] = field(default="prompt", metadata={"help": "the text field of the dataset"})
     log_with: Optional[str] = field(default=None, metadata={"help": "use 'wandb' to log with wandb"})
-    logging_steps: Optional[int] = field(default=100, metadata={"help": "the number of update steps between two logs"})
+    logging_steps: Optional[int] = field(default=10, metadata={"help": "the number of update steps between two logs"})
     train_split: Optional[str] = field(
         default="train", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
     )
@@ -298,6 +306,7 @@ def create_and_prepare_model(args):
                         module = module.to(torch_dtype)
 
     tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+    # print(tokenizer.pad_token_id, tokenizer.pad_token)
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -344,21 +353,70 @@ def prepare_dataset(args, dataset, tokenizer, num_proc=2):
     return dataset
 
 
+def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
+    original_columns = dataset.column_names
+    dataset = dataset.map(
+        apply_chat_template,
+        fn_kwargs={
+            "tokenizer": tokenizer,
+            "task": "rm",
+            "auto_insert_empty_system_msg": False,
+        },
+        remove_columns=list(dataset.features),
+        desc="Applying chat template",
+    )
+
+    for index in random.sample(range(len(dataset)), 3):
+        print(f"Sample {index} of the processed dataset:\n\n{dataset[index]}")
+
+    def preprocess_function(examples):
+        new_examples = {
+            "input_ids_chosen": [],
+            "attention_mask_chosen": [],
+            "input_ids_rejected": [],
+            "attention_mask_rejected": [],
+        }
+        for chosen, rejected in zip(examples["text_chosen"], examples["text_rejected"]):
+            tokenized_chosen = tokenizer(
+                chosen, padding=args.padding, truncation=True, max_length=script_args.seq_length
+            )
+            tokenized_rejected = tokenizer(
+                rejected, padding=args.padding, truncation=True, max_length=script_args.seq_length
+            )
+            new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
+            new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
+            new_examples["input_ids_rejected"].append(tokenized_rejected["input_ids"])
+            new_examples["attention_mask_rejected"].append(tokenized_rejected["attention_mask"])
+
+        return new_examples
+
+    original_columns = dataset.column_names
+    dataset = dataset.map(preprocess_function, batched=True, num_proc=num_proc, remove_columns=original_columns)
+
+    return dataset
+
+
 parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
+prepare_dataset_func = (
+    prepare_ultrafeedback_dataset if "ultrafeedback" in script_args.dataset_name else prepare_dataset
+)
 
 model, tokenizer = create_and_prepare_model(script_args)
+if "ultrafeedback" in script_args.dataset_name:
+    model, tokenizer = setup_chat_format(model, tokenizer)
 if script_args.mode != "eval":
     train_data = load_dataset(script_args.dataset_name, split=script_args.train_split)
-    train_dataset = prepare_dataset(script_args, train_data, tokenizer)
+    train_dataset = prepare_dataset_func(script_args, train_data, tokenizer)
 else:
     train_dataset = None
 
 if script_args.eval_split is not None and script_args.eval_split != "None":
     eval_data = load_dataset(script_args.dataset_name, split=script_args.eval_split)
-    eval_dataset = prepare_dataset(script_args, eval_data, tokenizer)
+    eval_dataset = prepare_dataset_func(script_args, eval_data, tokenizer)
 else:
     eval_dataset = None
+
 
 # don't include gradient_checkpointing here, see trl#728
 training_args = TrainingArguments(
@@ -385,6 +443,7 @@ training_args = TrainingArguments(
 )
 
 data_collator = GPTRewardDataCollatorWithPadding(tokenizer, max_length=script_args.seq_length, pad_to_multiple_of=8)
+
 
 trainer = GPTRewardTrainer(
     model=model,
@@ -413,6 +472,20 @@ elif script_args.mode == "eval":
     print(results)
 elif script_args.mode == "relabel":
 
+    # def relabel_ultrafeedback_with_preds(batch: Dict[str, List]):
+    #     relabel_batch = {
+    #         "prompt": [],
+    #         "chosen": [],
+    #         "rejected": [],
+    #     }
+    #     for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(batch["prompt"], batch["chosen"], batch["rejected"], batch["pred_chosen"], batch["pred_rejected"]):
+    #         relabel_batch["prompt"].append(prompt)
+    #         if pred_chosen >= pred_rejected:
+    #             relabel_batch["chosen"].append(chosen)
+    #             relabel_batch["rejected"].append(rejected)
+    #         else:
+    #             relabel_batch["chosen"].append(rejected)
+    #             relabel_batch["rejected"].append(chosen)
     def relabel_with_preds(batch: Dict[str, List]):
         relabel_batch = {
             "prompt": [],

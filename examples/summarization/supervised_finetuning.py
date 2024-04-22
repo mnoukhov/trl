@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from typing import Optional
+import random
 
 import bitsandbytes as bnb
 import torch
@@ -21,7 +22,7 @@ from transformers.pytorch_utils import Conv1D
 from transformers.trainer_utils import get_last_checkpoint
 
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
-
+from handbook_data import apply_chat_template, setup_chat_format
 
 tqdm.pandas()
 
@@ -52,6 +53,7 @@ class ScriptArguments:
     learning_rate: Optional[float] = field(default=1e-5, metadata={"help": "the learning rate"})
     lr_scheduler_type: Optional[str] = field(default="cosine")
     num_warmup_steps: Optional[int] = field(default=100)
+    warmup_ratio: Optional[float] = field(default=0.0)
     weight_decay: Optional[float] = field(default=0.05)
     optimizer_type: Optional[str] = field(default="paged_adamw_32bit", metadata={"help": "the optimizer type"})
 
@@ -203,7 +205,7 @@ def create_model(args):
         trust_remote_code=args.trust_remote_code,
         torch_dtype=torch_dtype,
         # max_memory=max_memory,
-        token=True,
+        # token=True,
     )
     model.config.torch_dtype = torch_dtype
     model.config.use_cache = False
@@ -226,6 +228,33 @@ if __name__ == "__main__":
 
     train_dataset, eval_dataset = create_datasets(args)
 
+    if "ultra" in args.dataset_name:
+        model, tokenizer = setup_chat_format(model, tokenizer)
+        train_dataset = train_dataset.map(
+            apply_chat_template,
+            fn_kwargs={
+                "tokenizer": tokenizer,
+                "task": "sft",
+                "auto_insert_empty_system_msg": False,
+            },
+            remove_columns=list(train_dataset.features),
+            desc="Applying chat template",
+        )
+
+        eval_dataset = eval_dataset.map(
+            apply_chat_template,
+            fn_kwargs={
+                "tokenizer": tokenizer,
+                "task": "sft",
+                "auto_insert_empty_system_msg": False,
+            },
+            remove_columns=list(eval_dataset.features),
+            desc="Applying chat template",
+        )
+
+        for index in random.sample(range(len(train_dataset)), 3):
+            print(f"Sample {index} of the processed training set:\n\n{train_dataset[index]['text']}")
+
     if args.train_completions:
         data_collator = DataCollatorForCompletionOnlyLM(tokenizer=tokenizer, response_template="TL;DR:")
     else:
@@ -246,6 +275,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         lr_scheduler_type=args.lr_scheduler_type,
         warmup_steps=args.num_warmup_steps,
+        warmup_ratio=args.warmup_ratio,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         gradient_checkpointing=args.gradient_checkpointing,
         bf16=args.bf16,
@@ -277,9 +307,9 @@ if __name__ == "__main__":
     else:
         peft_config = None
 
-    chars_per_token = chars_token_ratio(train_dataset, tokenizer)
+    chars_per_token = chars_token_ratio(train_dataset, tokenizer) if not "ultra" in args.dataset_name else 3.6
     print(f"The character to token ratio of the train dataset is: {chars_per_token:.2f}")
-
+    print(args.dataset_name)
     print("Starting main loop")
     trainer = SFTTrainer(
         model=model,
@@ -289,7 +319,8 @@ if __name__ == "__main__":
         eval_dataset=eval_dataset,
         peft_config=peft_config,
         max_seq_length=args.seq_length,
-        formatting_func=prepare_sample_text,
+        formatting_func=prepare_sample_text if not ("ultra" in args.dataset_name) else None,
+        dataset_text_field="text" if "ultra" in args.dataset_name else None,
         packing=args.packing,
         chars_per_token=chars_per_token,
         data_collator=data_collator,
