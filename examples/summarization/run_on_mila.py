@@ -6,7 +6,7 @@ from copy import deepcopy
 
 import yaml
 from accelerate.commands import launch
-from generate_vllm import generate_vllm_args_dict
+from generate_vllm import generate_relabel_args_dict
 
 def run_exp(exp_dict, savedir, args):
     exp_name = exp_dict.pop("name")
@@ -38,7 +38,7 @@ def run_exp(exp_dict, savedir, args):
     elif exp_name.startswith("gptrm"):
         accelerate_launch("gpt_reward_modeling.py", exp_dict, args)
     elif exp_name.startswith("sft"):
-        accelerate_launch("supervised_finetuning.py", exp_dict, args)
+        accelerate_launch("sft.py", exp_dict, args)
     elif exp_name.startswith("rouge"):
         exp_dict.pop("save_strategy", None)
         accelerate_launch("evaluate_rouge.py", exp_dict, args)
@@ -186,7 +186,7 @@ if __name__ == "__main__":
         exp_list[0]["name"] = exp_list[0]["name"] + f"_local_{timenow}"
 
 
-    exp_list[0]["save_strategy"] = "no"
+    # exp_list[0]["save_strategy"] = "no"
 
     # Run experiments and create results file
     run_exp(exp_list[0], "output", args)
