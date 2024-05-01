@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import torch
 from accelerate import PartialState
+from callbacks import PerplexityCallback
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
@@ -12,7 +13,6 @@ from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantiza
 
 @dataclass
 class DPOScriptArguments:
-    output_model_name: str = field(default="", metadata={"help": "model name to upload"})
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_name: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_test_name: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
@@ -103,14 +103,26 @@ if __name__ == "__main__":
         peft_config=get_peft_config(model_config),
     )
 
+    callback = PerplexityCallback(
+        args=training_args,
+        dataset=eval_dataset,
+        tokenizer=tokenizer,
+        accelerator=trainer.accelerator,
+        max_length=args.max_length,
+        max_prompt_length=args.max_prompt_length,
+        prompt_field="prompt",
+        target_field="chosen",
+        hub_model_id=training_args.hub_model_id,
+    )
+
+    trainer.add_callback(callback)
+
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
-
-    print("DONE")
 
     trainer.save_model(training_args.output_dir)
 
     if PartialState().is_main_process:
         # model = trainer.model.merge_and_unload()
-        trainer.push_to_hub(args.output_model_name)
-        tokenizer.push_to_hub(args.output_model_name)
+        trainer.push_to_hub(training_args.hub_model_id)
+        tokenizer.push_to_hub(training_args.hub_model_id)

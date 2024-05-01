@@ -1,7 +1,7 @@
-sanity_check: True
 ## model and dataset
 model_name: "mnoukhov/pythia-2.8b-sft_hh_rlhf"
-output_model_name: "mnoukhov/pythia-2.8b-dpo_hh_rlhf"
+# output name
+hub_model_id: "mnoukhov/pythia-2.8b-dpo_hh_rlhf"
 dataset_name: "sophiex/hh-rlhf"
 report_to: "wandb"
 ## dpo
@@ -13,15 +13,15 @@ gradient_accumulation_steps: 32
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 4
 num_train_epochs: 1
-max_length: 1024
-max_prompt_length: 512 
-max_target_length: 512
+max_length: 512
+max_prompt_length: 256 
+max_target_length: 256
 beta: 0.1
 ## peft
 use_peft: True
 lora_r: 16
 lora_alpha: 32
-gradient_checkpointing: True
+# gradient_checkpointing: True
 evaluation_strategy: "steps"
 eval_steps: 0.2
 logging_steps: 100
