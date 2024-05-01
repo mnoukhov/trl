@@ -6,14 +6,16 @@ report_to: "wandb"
 learning_rate: 1e-5
 lr_scheduler_type: cosine
 load_in_8bit: False
+torch_dtype: bfloat16
 fp16: False
 bf16: True
-gradient_checkpointing: False
-gradient_accumulation_steps: 8
-per_device_train_batch_size: 16
+gradient_accumulation_steps: 32
+per_device_train_batch_size: 4
 per_device_eval_batch_size: 32
 num_train_epochs: 1
 max_seq_length: 1024
 use_peft: True
 lora_r: 16
 lora_alpha: 32
+gradient_checkpointing: False
+# ddp_find_unused_parameters: False
