@@ -106,7 +106,7 @@ if __name__ == "__main__":
         quantization_config=quantization_config,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path, use_fast=True)
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
 
     ################
     # Dataset
@@ -138,6 +138,6 @@ if __name__ == "__main__":
 
     trainer.save_model(training_args.output_dir)
 
-    if PartialState().is_main_process: 
+    if PartialState().is_main_process:
         model = trainer.model.merge_and_unload()
         model.push_to_hub(args.output_model_name)
