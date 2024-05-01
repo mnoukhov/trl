@@ -16,6 +16,8 @@ def run_exp(exp_dict, savedir, args):
     git_hash = exp_dict.pop("git")
     print(args)
 
+    exp_dict["output_dir"] = args.savedir_base
+
     os.environ["WANDB_RUN_ID"] = os.path.basename(savedir)
     os.environ["WANDB_NAME"] = exp_name
     os.environ["WANDB_RUN_GROUP"] = exp_name + "_" + git_hash
@@ -261,5 +263,3 @@ if __name__ == "__main__":
         use_threads=True,
         save_logs=False,
     )
-    # else:
-    #     run_exp(exp_list[0], "output", args)
