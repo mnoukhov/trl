@@ -585,7 +585,7 @@ class DPOTrainer(Trainer):
                 "policy_chosen_logps": policy_chosen_logps.detach(),
                 "policy_rejected_logps": policy_chosen_logps.detach(),
                 "reference_chosen_logps": reference_chosen_logps.detach(),
-                "reference_rejected_logps": reference_chosen_logps.detach(),
+                "reference_rejected_logps": reference_rejected_logps.detach(),
             }
         )
 
@@ -657,7 +657,7 @@ class DPOTrainer(Trainer):
         with self.compute_loss_context_manager():
             loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
 
-        metrics = {}
+        metrics = self.compute_metrics(outputs)
         for key, values in outputs.items():
             if key == "loss":
                 continue
@@ -747,11 +747,11 @@ def compute_dpo_metrics(eval_preds: EvalPrediction):
     reward_accuracies = (chosen_rewards > rejected_rewards).mean()
 
     metrics = {}
-    metrics["rewards/chosen"] = chosen_rewards.mean()
-    metrics["rewards/rejected"] = rejected_rewards.mean()
-    metrics["rewards/accuracies"] = reward_accuracies.mean()
-    metrics["rewards/margins"] = (chosen_rewards - rejected_rewards).mean()
-    metrics["logps/rejected"] = policy_rejected_logps.mean()
-    metrics["logps/chosen"] = policy_chosen_logps.mean()
+    metrics["rewards/chosen"] = chosen_rewards.mean().cpu()
+    metrics["rewards/rejected"] = rejected_rewards.mean().cpu()
+    metrics["rewards/accuracies"] = reward_accuracies.mean().cpu()
+    metrics["rewards/margins"] = (chosen_rewards - rejected_rewards).mean().cpu()
+    metrics["logps/rejected"] = policy_rejected_logps.mean().cpu()
+    metrics["logps/chosen"] = policy_chosen_logps.mean().cpu()
 
     return metrics

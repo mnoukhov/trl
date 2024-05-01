@@ -141,3 +141,4 @@ if __name__ == "__main__":
     if PartialState().is_main_process:
         model = trainer.model.merge_and_unload()
         model.push_to_hub(args.output_model_name)
+        tokenizer.push_to_hub(args.output_model_name)

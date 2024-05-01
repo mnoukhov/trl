@@ -19,3 +19,5 @@ max_seq_length: 1024
 use_peft: True
 lora_r: 8
 lora_alpha: 32
+evaluation_strategy: steps
+eval_steps: 0.2
