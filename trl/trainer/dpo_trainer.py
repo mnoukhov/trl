@@ -105,7 +105,7 @@ class DPOTrainer(Trainer):
             Whether or not to disable dropouts in `model` and `ref_model`.
         generate_during_eval (`bool`, defaults to `False`):
             Whether to sample and log generations during evaluation step.
-        compute_metrics (`Callable[[EvalPrediction], Dict]`, *optional*):
+        compute_metrics (`Callable[[], Dict]`, *optional*):
             The function to use to compute the metrics. Must take a `EvalPrediction` and return
             a dictionary string to metric values.
         model_init_kwargs: (`Optional[Dict]`, *optional*):
@@ -657,8 +657,10 @@ class DPOTrainer(Trainer):
         with self.compute_loss_context_manager():
             loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
 
-        metrics = self.compute_metrics(outputs)
-        for key, values in outputs.items():
+        # don't add loss to metrics
+        outputs.pop("loss")
+        metrics = self.compute_metrics(EvalPrediction(predictions=outputs.values(), label_ids=None))
+        for key, values in metrics.items():
             if key == "loss":
                 continue
             metrics[key] = self._nested_gather(values).mean().item()
@@ -744,14 +746,20 @@ def compute_dpo_metrics(eval_preds: EvalPrediction):
         reference_rejected_logps,
     ) = eval_preds.predictions
 
-    reward_accuracies = (chosen_rewards > rejected_rewards).mean()
+    if isinstance(chosen_rewards, torch.Tensor):
+        reward_accuracies = (chosen_rewards > rejected_rewards).float().mean()
+    else:
+        # numpy
+        reward_accuracies = (chosen_rewards > rejected_rewards).mean()
 
     metrics = {}
-    metrics["rewards/chosen"] = chosen_rewards.mean().cpu()
-    metrics["rewards/rejected"] = rejected_rewards.mean().cpu()
-    metrics["rewards/accuracies"] = reward_accuracies.mean().cpu()
-    metrics["rewards/margins"] = (chosen_rewards - rejected_rewards).mean().cpu()
-    metrics["logps/rejected"] = policy_rejected_logps.mean().cpu()
-    metrics["logps/chosen"] = policy_chosen_logps.mean().cpu()
+    metrics["rewards/chosen"] = chosen_rewards.mean()
+    metrics["rewards/rejected"] = rejected_rewards.mean()
+    metrics["rewards/accuracies"] = reward_accuracies.mean()
+    metrics["rewards/margins"] = (chosen_rewards - rejected_rewards).mean()
+    metrics["logps/rejected"] = policy_rejected_logps.mean()
+    metrics["logps/chosen"] = policy_chosen_logps.mean()
+    metrics["logps/ref_rejected"] = reference_rejected_logps.mean()
+    metrics["logps/ref_chosen"] = reference_chosen_logps.mean()
 
     return metrics

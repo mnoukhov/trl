@@ -6,13 +6,16 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
-from trl import DPOTrainer, ModelConfig, get_kbit_device_map, get_peft_config, get_quantization_config
+from trl import DPOTrainer, ModelConfig
+from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantization_config
 
 
 @dataclass
 class DPOScriptArguments:
     output_model_name: str = field(default="", metadata={"help": "model name to upload"})
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
+    dataset_train_name: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
+    dataset_test_name: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
     beta: float = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
     max_length: int = field(default=512, metadata={"help": "max length of each sample"})
     max_prompt_length: int = field(default=128, metadata={"help": "max length of each sample's prompt"})
@@ -36,7 +39,7 @@ class DPOScriptArguments:
 
 if __name__ == "__main__":
     parser = HfArgumentParser((DPOScriptArguments, TrainingArguments, ModelConfig))
-    args, training_args, model_config = parser.parse_args_and_config()
+    args, training_args, model_config = parser.parse_args_into_dataclasses()
 
     ################
     # Model & Tokenizer
@@ -79,8 +82,8 @@ if __name__ == "__main__":
         for key in ds:
             ds[key] = ds[key].select(range(50))
 
-    train_dataset = ds[args.dataset_train_split]
-    eval_dataset = ds[args.dataset_test_split]
+    train_dataset = ds[args.dataset_train_name]
+    eval_dataset = ds[args.dataset_test_name]
 
     ################
     # Training
@@ -102,6 +105,8 @@ if __name__ == "__main__":
 
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
+
+    print("DONE")
 
     trainer.save_model(training_args.output_dir)
 
