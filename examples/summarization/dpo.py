@@ -67,6 +67,8 @@ if __name__ == "__main__":
         model_ref = None
 
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     if args.ignore_bias_buffers:
         # torch distributed hack
