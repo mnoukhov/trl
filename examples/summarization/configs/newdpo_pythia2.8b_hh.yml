@@ -5,7 +5,7 @@ hub_model_id: "mnoukhov/pythia-2.8b-dpo_hh_rlhf"
 dataset_name: "sophiex/hh-rlhf"
 report_to: "wandb"
 ## dpo
-learning_rate: 1e-5
+learning_rate: 5e-5
 lr_scheduler_type: cosine
 fp16: False
 bf16: True
