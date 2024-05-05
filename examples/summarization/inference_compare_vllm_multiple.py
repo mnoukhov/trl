@@ -17,7 +17,7 @@ from transformers import (
 )
 from vllm import LLM, SamplingParams
 
-from handbook_data import setup_chat_format
+from handbook_data import setup_chat_format_simple, apply_chat_template
 
 
 @dataclass
@@ -52,21 +52,7 @@ class ScriptArguments:
     cache_dir: Optional[str] = field(default=None, metadata={"help": "cache dir"})
 
 
-def prepare_vllm_model(script_args):
-    if script_args.tokenizer_name is not None:
-        tokenizer_name = script_args.tokenizer_name
-    else:
-        tokenizer_name = script_args.model_name
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # if getattr(model.config, "pad_token_id", None) is None:
-    #     model.config.pad_token_id = model.config.eos_token_id
-
-    tokenizer.padding_side = "left"
-
+def prepare_vllm_model(script_args, model_name, tokenizer):
     if script_args.bf16:
         torch_dtype = torch.bfloat16
     elif script_args.fp16_model:
@@ -75,14 +61,17 @@ def prepare_vllm_model(script_args):
         torch_dtype = "auto"
 
     llm = LLM(
-        model=script_args.merged_model_name,
+        model=model_name,
         dtype=torch_dtype,
-        tokenizer=tokenizer_name,
+        tokenizer=script_args.tokenizer_name,
         max_model_len=script_args.seq_length,
     )
     llm.set_tokenizer(tokenizer)
+    print(llm)
+    print(tokenizer)
+    print(len(tokenizer))
 
-    return llm, tokenizer
+    return llm
 
 
 def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
@@ -96,12 +85,13 @@ def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
         }
         for i in range(len(examples["prompt"])):
 
-            prompt_message = examples["chosen"][i][:-1]
+            prompt_message = examples["chosen"][i][0]
+            return_batch["prompt"].append(f"{prompt_message['role']}\n{prompt_message['content']}\nassistant\n")
             chosen_messages = examples["chosen"][i][-1:]
             rejected_messages = examples["rejected"][i][-1:]
             return_batch["chosen"].append(tokenizer.apply_chat_template(chosen_messages, tokenize=False))
             return_batch["rejected"].append(tokenizer.apply_chat_template(rejected_messages, tokenize=False))
-            return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
+            # return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
         return return_batch
 
     dataset = dataset.map(preprocess_func, batched=True, num_proc=num_proc, remove_columns=original_columns)
@@ -128,17 +118,33 @@ def create_and_prepare_model(args, generation=False):
     else:
         torch_dtype = None
 
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        args.model_name,
-        quantization_config=quantization_config,
-        device_map=device_map,
-        num_labels=1,
-        torch_dtype=torch_dtype,
-        cache_dir=args.cache_dir,
-    )
+    if os.path.exists(os.path.join(args.merged_model_name, "adapter_config.json")):
+        model = AutoPeftModelForCausalLM.from_pretrained(
+            args.merged_model_name,
+            quantization_config=quantization_config,
+            device_map=device_map,
+            torch_dtype=torch_dtype,
+            cache_dir=args.cache_dir,
+        )
+        merged = model.merge_and_unload()
+        model_save_path = os.path.join(args.merged_model_name, "merged_model")
+        merged.save_pretrained(model_save_path)
+        del model
+        del merged
+        model_name = model_save_path
+    else:
+        model_name = args.merged_model_name
 
-    if args.better_transformer:
-        model.to_bettertransformer()
+    # model = AutoPeftModelForCausalLM.from_pretrained(
+    #     args.model_name,
+    #     quantization_config=quantization_config,
+    #     device_map=device_map,
+    #     torch_dtype=torch_dtype,
+    #     cache_dir=args.cache_dir,
+    # )
+
+    # if args.better_transformer:
+    #     model.to_bettertransformer()
 
     if script_args.tokenizer_name is not None:
         tokenizer_name = script_args.tokenizer_name
@@ -147,13 +153,21 @@ def create_and_prepare_model(args, generation=False):
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # tokenizer.pad_token = tokenizer.eos_token
+        print("\n\nNo pad token found in tokenizer, setting it to <|padding|>")
+        tokenizer.pad_token = "<|padding|>"
+        model.config.pad_token_id = tokenizer.pad_token_id
+    else:
+        print(f"Pad token found in tokenizer: {tokenizer.pad_token}")
 
-    if getattr(model.config, "pad_token_id", None) is None:
-        model.config.pad_token_id = model.config.eos_token_id
+    # if getattr(tokenizer, "pad_token", None) is None:
+    #     tokenizer.pad_token = tokenizer.eos_token
+
+    # if getattr(model.config, "pad_token_id", None) is None:
+    #     model.config.pad_token_id = model.config.eos_token_id
 
     tokenizer.padding_side = "left"
-    return model, tokenizer
+    return model_name, tokenizer
 
 
 def generate_from_prompt(prompt_ids, prompts_attention_mask, model, args):
@@ -200,20 +214,37 @@ splits_names = {
 }
 relabel_dataset = DatasetDict()
 
-# model, tokenizer = create_and_prepare_model(script_args, generation=True)
+model_name, tokenizer = create_and_prepare_model(script_args, generation=True)
+if "ultra" in script_args.dataset_name:
+    _, tokenizer = setup_chat_format_simple(None, tokenizer)
+llm = prepare_vllm_model(script_args, model_name, tokenizer)
 
-llm, tokenizer = prepare_vllm_model(script_args)
-
-if "ultrafeedback" in script_args.dataset_name:
-    _, tokenizer = setup_chat_format(None, tokenizer)
 
 for split, split_name in splits_names.items():
     dataset = load_dataset(script_args.dataset_name, split=split_name)
-    if "ultrafeedback" in script_args.dataset_name:
-        dataset = prepare_ultrafeedback_dataset(script_args, dataset, tokenizer, num_proc=2)
+    if "ultra" in script_args.dataset_name:
+        dataset = dataset.map(
+            apply_chat_template,
+            fn_kwargs={
+                "tokenizer": tokenizer,
+                "task": "dpo_gen",
+                "auto_insert_empty_system_msg": False,
+            },
+            desc="Applying chat template",
+        )
+        # dataset = prepare_ultrafeedback_dataset(script_args, dataset, tokenizer, num_proc=2)
+
+    # print train samples
+    for index in random.sample(range(len(dataset)), 3):
+        print(f"Sample {index} of the processed dataset:")
+        for key in dataset.column_names:
+            print(f"{key}: {dataset[index][key]}")
+
     prompts = dataset["prompt"]
+    raw_prompts = dataset["raw_prompt"]
     print(f"Split: {split}, Number of prompts: {len(prompts)}")
     print(prompts[:3])
+    print(f"raw prompt: {raw_prompts[:3]}")
 
     generations = generate_with_llm(llm, prompts, script_args)
 
@@ -224,7 +255,7 @@ for split, split_name in splits_names.items():
 
     output_dataset = {"prompt": [], "completions": []}
 
-    for prompt_id, prompt in enumerate(prompts):
+    for prompt_id, prompt in enumerate(raw_prompts):
         outputs = generations[prompt_id].outputs  # [i].text
         completions = [outputs[j].text for j in range(len(outputs))]
         output_dataset["prompt"].append(prompt)

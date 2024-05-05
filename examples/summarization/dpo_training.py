@@ -48,7 +48,7 @@ from trl.trainer.utils import pad_to_length
 
 from data_relabel_strategy import min_max, top_two
 
-from handbook_data import apply_chat_template, setup_chat_format
+from handbook_data import apply_chat_template, setup_chat_format_simple
 
 
 # Define and parse arguments.
@@ -255,24 +255,15 @@ def create_and_prepare_model(args):
             if target_module_found:
                 model.get_submodule(key + ".original_module").requires_grad_(False)
 
-    if args.bf16:
-        for name, module in model.named_modules():
-            if isinstance(module, LoraLayer):
-                module = module.to(torch.bfloat16)
-            if "norm" in name:
-                module = module.to(torch.float32)
-            if "score" in name or "embed_tokens" in name:
-                if hasattr(module, "weight") and module.weight.dtype == torch.float32:
-                    module = module.to(torch.bfloat16)
-
-    # tokenizer_name = script_args.model_name if script_args.tokenizer_name is None else script_args.tokenizer_name
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    # tokenizer.truncation_side = "left"
+    tokenizer.truncation_side = "left"
     if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if getattr(model.config, "pad_token_id", None) is None:
-        model.config.pad_token_id = model.config.eos_token_id
+        # tokenizer.pad_token = tokenizer.eos_token
+        print("\n\nNo pad token found in tokenizer, setting it to <|padding|>")
+        tokenizer.pad_token = "<|padding|>"
+        model.config.pad_token_id = tokenizer.pad_token_id
+    else:
+        print(f"Pad token found in tokenizer: {tokenizer.pad_token}")
 
     return model, tokenizer
 
@@ -314,6 +305,14 @@ def strip_prompt(examples):
     return examples
 
 
+def add_role(examples):
+    # add <|assistant|>\ntext<|endoftext|> to chosen and rej for pseduo
+    for i in range(len(examples["chosen"])):
+        examples["chosen"][i] = f"<|assistant|>\n{examples['chosen'][i]}<|endoftext|>"
+        examples["rejected"][i] = f"<|assistant|>\n{examples['rejected'][i]}<|endoftext|>"
+    return examples
+
+
 def create_and_prepare_dataset(args):
 
     strategy_to_func = {
@@ -325,8 +324,11 @@ def create_and_prepare_dataset(args):
         train_dataset = load_dataset(args.dataset_name, split=args.train_split, cache_dir=args.cache_dir)
         eval_dataset = load_dataset(args.dataset_name, split=args.eval_split, cache_dir=args.cache_dir)
     else:
-        train_dataset = load_from_disk(args.dataset_name)["train"]
-        eval_dataset = load_from_disk(args.dataset_name)["train"]
+
+        train_dataset = load_from_disk(args.dataset_name)[args.train_split]
+        eval_dataset = load_from_disk(args.dataset_name)[args.eval_split]
+        # limit eval to [:100]
+        # eval_dataset = eval_dataset.select(list(range(5)))
 
     if args.pseudo_dataset_name is not None:
         all_train_datasets = [train_dataset] if len(train_dataset) > 1 else []
@@ -336,8 +338,11 @@ def create_and_prepare_dataset(args):
                 dataset = load_dataset(ds_name, split=args.pseudo_dataset_split, cache_dir=args.cache_dir)
             else:
                 dataset = load_from_disk(ds_name)  # ["train"]
-            dataset = dataset.map(strip_prompt, batched=True)
+            dataset = dataset.map(strip_prompt, batched=True) if "ultra" not in args.dataset_name else dataset
             dataset = dataset.map(strategy_to_func[args.relabel_strategy], batched=True)
+            if "ultra" in args.dataset_name:
+                dataset = dataset.map(add_role, batched=True)
+
             all_train_datasets.append(dataset)
 
         train_dataset = concatenate_datasets(all_train_datasets)
@@ -356,12 +361,12 @@ def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
         }
         for i in range(len(examples["prompt"])):
 
-            prompt_message = examples["chosen"][i][:-1]
+            prompt_message = examples["chosen"][i][0]
+            return_batch["prompt"].append(f"{prompt_message['role']}\n{prompt_message['content']}\n")
             chosen_messages = examples["chosen"][i][-1:]
             rejected_messages = examples["rejected"][i][-1:]
             return_batch["chosen"].append(tokenizer.apply_chat_template(chosen_messages, tokenize=False))
             return_batch["rejected"].append(tokenizer.apply_chat_template(rejected_messages, tokenize=False))
-            return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
         return return_batch
 
     dataset = dataset.map(preprocess_func, batched=True, num_proc=num_proc, remove_columns=original_columns)
@@ -574,7 +579,7 @@ class EvaluateOnTrain(TrainerCallback):
         super().__init__()
         self._trainer = trainer
         self.completed_step = -1
-        self.train_eval_dataset = Dataset.from_dict(self._trainer.train_dataset[:5000])
+        self.train_eval_dataset = Dataset.from_dict(self._trainer.train_dataset[:2000])
 
     def on_evaluate(self, args, state, control, **kwargs):
         # stops recursion
@@ -608,8 +613,8 @@ if __name__ == "__main__":
     # 1. load a pretrained model
     model, tokenizer = create_and_prepare_model(script_args)
 
-    if "ultrafeedback" in script_args.dataset_name:
-        model, tokenizer = setup_chat_format(model, tokenizer)
+    if "ultra" in script_args.dataset_name:
+        model, tokenizer = setup_chat_format_simple(model, tokenizer)
 
     if script_args.ignore_bias_buffers:
         # torch distributed hack
@@ -619,11 +624,31 @@ if __name__ == "__main__":
 
     train_dataset, eval_dataset = create_and_prepare_dataset(script_args)
 
-    if "ultrafeedback" in script_args.dataset_name:
-        eval_dataset = prepare_ultrafeedback_dataset(script_args, eval_dataset, tokenizer)
+    if "ultra" in script_args.dataset_name:
+        # eval_dataset = prepare_ultrafeedback_dataset(script_args, eval_dataset, tokenizer) #not z template
+        eval_dataset = eval_dataset.map(
+            apply_chat_template,
+            fn_kwargs={
+                "tokenizer": tokenizer,
+                "task": "dpo",
+                "auto_insert_empty_system_msg": False,
+            },
+            # remove_columns=list(eval_dataset.features),
+            desc="Applying chat template on Eval",
+        )
 
         if script_args.pseudo_dataset_name is None:
-            train_dataset = prepare_ultrafeedback_dataset(script_args, train_dataset, tokenizer)
+            # train_dataset = prepare_ultrafeedback_dataset(script_args, train_dataset, tokenizer)
+            train_dataset = train_dataset.map(
+                apply_chat_template,
+                fn_kwargs={
+                    "tokenizer": tokenizer,
+                    "task": "dpo",
+                    "auto_insert_empty_system_msg": False,
+                },
+                # remove_columns=list(train_dataset.features),
+                desc="Applying chat template Train",
+            )
 
     # print train samples
     for index in random.sample(range(len(train_dataset)), 3):
@@ -657,6 +682,7 @@ if __name__ == "__main__":
         gradient_checkpointing_kwargs={"use_reentrant": False} if script_args.gradient_checkpointing else None,
     )
 
+    print(f"script_args.bf16: {script_args.bf16}")
     # 5. initialize the DPO trainer
     dpo_trainer = DPOTrainer(
         model=model,
@@ -740,6 +766,8 @@ if __name__ == "__main__":
     elif script_args.mode == "relabel":
         # num_gen_per_prompt = script_args.num_gen_per_prompt
         num_gen_per_prompt = len(eval_dataset["completions"][0])
+        num_gen_per_prompt = num_gen_per_prompt if num_gen_per_prompt % 2 == 0 else num_gen_per_prompt - 1
+
         relabel_strategy = script_args.relabel_strategy
 
         def relabel_with_preds(batch: Dict[str, List]):
@@ -773,7 +801,6 @@ if __name__ == "__main__":
 
         dpo_trainer.accelerator.print(f"Prediction {script_args.eval_split}")
         print(eval_dataset)
-        print(num_gen_per_prompt)
         # eval_dataset has rows with prompt, list of completions
         # new_dataset should have rows with prompt, list of completions, list of scores
 
@@ -808,12 +835,13 @@ if __name__ == "__main__":
                 "chosen": [],
                 "rejected": [],
             }
+
             for i in range(len(batch["prompt"])):
-                if len(batch["completions"][i]) != num_gen_per_prompt:
+                if len(batch["completions"][i]) < 2:
                     print(batch["prompt"][i])
                     print(batch["completions"][i])
                     continue
-                for j in range(0, len(batch["completions"][i]), 2):
+                for j in range(0, num_gen_per_prompt, 2):
                     two_column_batch["prompt"].append(batch["prompt"][i])
                     two_column_batch["chosen"].append(batch["completions"][i][j])
                     two_column_batch["rejected"].append(batch["completions"][i][j + 1])
@@ -835,6 +863,7 @@ if __name__ == "__main__":
             reference_rejected_logps,
         ) = preds
         dpo_trainer.accelerator.print(f"metrics {metrics}")
+        print(chosen_rewards[:10])
         if dpo_trainer.accelerator.is_local_main_process:
             eval_dataset_two_col = eval_dataset_two_col.add_column("pred_chosen", chosen_rewards)
             eval_dataset_two_col = eval_dataset_two_col.add_column("pred_rejected", rejected_rewards)

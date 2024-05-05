@@ -22,7 +22,7 @@ from transformers.pytorch_utils import Conv1D
 from transformers.trainer_utils import get_last_checkpoint
 
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
-from handbook_data import apply_chat_template, setup_chat_format
+from handbook_data import apply_chat_template, setup_chat_format_simple
 
 tqdm.pandas()
 
@@ -58,7 +58,7 @@ class ScriptArguments:
     optimizer_type: Optional[str] = field(default="paged_adamw_32bit", metadata={"help": "the optimizer type"})
 
     max_steps: Optional[int] = field(default=-1, metadata={"help": "the number of training steps"})
-    num_train_epochs: Optional[int] = field(default=1, metadata={"help": "the number of training epochs"})
+    num_train_epochs: Optional[float] = field(default=1, metadata={"help": "the number of training epochs"})
     per_device_train_batch_size: Optional[int] = field(
         default=16, metadata={"help": "the per device train batch size"}
     )
@@ -212,8 +212,12 @@ def create_model(args):
 
     print("Loading dataset")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name if args.tokenizer_name is None else args.tokenizer_name)
+
     if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # tokenizer.pad_token = tokenizer.eos_token
+        print("\n\nNo pad token found in tokenizer, setting it to <|padding|>")
+        tokenizer.pad_token = "<|padding|>"
+        model.config.pad_token_id = tokenizer.pad_token_id
 
     return model, tokenizer
 
@@ -226,10 +230,13 @@ if __name__ == "__main__":
 
     model, tokenizer = create_model(args)
 
+    print("Tokenizer: ", tokenizer)
+    print(f"len tokenizer: {len(tokenizer)}")
+
     train_dataset, eval_dataset = create_datasets(args)
 
     if "ultra" in args.dataset_name:
-        model, tokenizer = setup_chat_format(model, tokenizer)
+        model, tokenizer = setup_chat_format_simple(model, tokenizer)
         train_dataset = train_dataset.map(
             apply_chat_template,
             fn_kwargs={
@@ -252,7 +259,7 @@ if __name__ == "__main__":
             desc="Applying chat template",
         )
 
-        for index in random.sample(range(len(train_dataset)), 3):
+        for index in random.sample(range(len(train_dataset)), 2):
             print(f"Sample {index} of the processed training set:\n\n{train_dataset[index]['text']}")
 
     if args.train_completions:
@@ -288,6 +295,7 @@ if __name__ == "__main__":
         seed=args.seed,
         # find_unused_params is necessary for grad checkpointing
         ddp_find_unused_parameters=(args.gradient_checkpointing),
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
     )
 
     if args.use_peft:

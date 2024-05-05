@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import Dataset, builder, load_dataset
@@ -15,6 +16,8 @@ from vllm import LLM, SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
 
 import wandb
+
+from handbook_data import apply_chat_template, setup_chat_format_simple
 
 builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
 
@@ -51,7 +54,7 @@ class EvalScriptArguments:
     gold_model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     gold_model_revision: Optional[str] = field(default=None)
     eval_dtype: Optional[str] = field(default="auto")
-    eval_batch_size: Optional[int] = field(default=16)
+    eval_batch_size: Optional[int] = field(default=4)
     max_length: Optional[int] = field(default=512)
     gold_tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     flash_attention: Optional[bool] = field(default=False)
@@ -61,16 +64,19 @@ def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
     original_columns = dataset.column_names
 
     def preprocess_func(examples):
-        return_batch = {"prompt": [], "chosen": [], "rejected": [], "query_reference_response": []}
+        return_batch = {"prompt": [], "chosen": [], "rejected": [], "raw_prompt": [], "query_reference_response": []}
         for i in range(len(examples["prompt"])):
 
-            prompt_message = examples["chosen"][i][:-1]
+            prompt_message = examples["chosen"][i][0]
+            return_batch["prompt"].append(f"{prompt_message['role']}\n{prompt_message['content']}\nassistant\n")
             chosen_messages = examples["chosen"][i][-1:]
             rejected_messages = examples["rejected"][i][-1:]
             return_batch["chosen"].append(tokenizer.apply_chat_template(chosen_messages, tokenize=False))
             return_batch["rejected"].append(tokenizer.apply_chat_template(rejected_messages, tokenize=False))
-            return_batch["prompt"].append(tokenizer.apply_chat_template(prompt_message, tokenize=False))
-            return_batch["query_reference_response"].append(return_batch["prompt"][-1] + return_batch["chosen"][-1])
+            return_batch["query_reference_response"].append(
+                f"[INST] {prompt_message['content']} [\INST] " + chosen_messages[0]["content"]
+            )
+            return_batch["raw_prompt"].append(prompt_message["content"])
         return return_batch
 
     dataset = dataset.map(preprocess_func, batched=True, num_proc=num_proc, remove_columns=original_columns)
@@ -82,11 +88,36 @@ def prepare_ultrafeedback_dataset(args, dataset, tokenizer, num_proc=2):
 
 def generate(script_args):
     tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if getattr(tokenizer, "pad_token", None) is None:
+        # tokenizer.pad_token = tokenizer.eos_token
+        print("\n\nNo pad token found in tokenizer, setting it to <|padding|>")
+        tokenizer.pad_token = "<|padding|>"
+        model.config.pad_token_id = tokenizer.pad_token_id
+    else:
+        print(f"Pad token found in tokenizer: {tokenizer.pad_token}")
+
     tokenizer.padding_side = "left"
 
+    _, tokenizer = setup_chat_format_simple(None, tokenizer)
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
-    dataset = prepare_ultrafeedback_dataset(script_args, dataset, tokenizer)
+
+    # dataset = prepare_ultrafeedback_dataset(script_args, dataset, tokenizer) #uncomment to not use ztemplate
+    dataset = dataset.map(
+        apply_chat_template,
+        fn_kwargs={
+            "tokenizer": tokenizer,
+            "task": "rm_eval",
+            "auto_insert_empty_system_msg": False,
+        },
+        desc="Applying chat template on Gen Eval",
+    )
+
+    # print train samples
+    for index in random.sample(range(len(dataset)), 3):
+        print(f"Sample {index} of the processed dataset:")
+        for key in dataset.column_names:
+            print(f"{key}: {dataset[index][key]}")
+
     prompts = dataset["prompt"]
 
     sampling_params = SamplingParams(
@@ -95,23 +126,26 @@ def generate(script_args):
         top_p=script_args.top_p,
         n=1,
         include_stop_str_in_output=True,
-        skip_special_tokens=False,
+        skip_special_tokens=True,
     )
 
     gens = {}
-
-    model = AutoPeftModelForCausalLM.from_pretrained(script_args.model_name)
-    merged = model.merge_and_unload()
-    model_save_path = f"{script_args.output_dir}/merged_model"
-    merged.save_pretrained(model_save_path)
-    del model
-    del merged
-    model_name = model_save_path
+    dtype = torch.bfloat16 if script_args.gen_dtype == "bf16" else torch.float32
+    if os.path.exists(os.path.join(script_args.model_name, "adapter_config.json")):
+        model = AutoPeftModelForCausalLM.from_pretrained(script_args.model_name)
+        merged = model.merge_and_unload()
+        model_save_path = f"{script_args.output_dir}/merged_model"
+        merged.save_pretrained(model_save_path)
+        del model
+        del merged
+        model_name = model_save_path
+    else:
+        model_name = script_args.model_name
 
     llm = LLM(
         model=model_name,
         tokenizer=script_args.tokenizer_name,
-        dtype=script_args.gen_dtype,
+        dtype=dtype,
         max_model_len=script_args.seq_length,
         tensor_parallel_size=script_args.num_gpus,
         trust_remote_code=True,
@@ -121,13 +155,23 @@ def generate(script_args):
     revision_name = "default"
     generations = llm.generate(prompts, sampling_params)
 
-    texts = [output.prompt + output.outputs[0].text for output in generations]
+    raw_prompts = dataset["raw_prompt"]
+    rm_formatted_text = [
+        f"[INST] {prompt} [\INST] {txt.outputs[0].text}" for prompt, txt in zip(raw_prompts, generations)
+    ]
+    # texts = [output.prompt + output.outputs[0].text for output in generations]
     print("prompt + gen:")
     for i in range(3):
-        print(f"text {i}: {texts[i]}")
-    gens[revision_name] = texts
+        print("=========================== " + str(i) + " ============================")
+        print(f"PROMPT: {raw_prompts[i]}\n")
+        print("---------------------------\n")
+        print(f"GEN: {rm_formatted_text[i]}\n")
+        print("---------------------------\n")
+        print(f"REF: {dataset['query_reference_response'][i]}\n")
 
-    dataset = dataset.add_column(f"generations_{revision_name}", texts)
+    gens[revision_name] = rm_formatted_text
+
+    dataset = dataset.add_column(f"generations_{revision_name}", rm_formatted_text)
 
     # delete old model
     destroy_model_parallel()
@@ -137,9 +181,6 @@ def generate(script_args):
     torch.distributed.destroy_process_group()
 
     if script_args.output_dir is not None:
-        # TODO add hash to dataset path
-        # sampling_str = str(sampling_params)
-        # sampling_hash = hashlib.sha256(sampling_str.encode()).hexdigest()[:10]
         dataset_path = os.path.join(
             script_args.output_dir,
             script_args.dataset_name.replace("/", "_"),
@@ -150,33 +191,17 @@ def generate(script_args):
         with open(f"{dataset_path}_sampling_params.txt", "w") as f:
             print(sampling_params, file=f)
 
-    print(f"generated {len(gens)} steps")
     reference = dataset["query_reference_response"]
 
     return reference, gens
 
 
-def evaluate(args, reference, generations, model_name=None):
-    if args.wandb_log_id is not None:
-        # don't overwrite the wandb name of the original run
-        if args.wandb_log_id == "model_name":
-            # model name = config_wandblogid
-            wandb_log_id = model_name.split("_")[-1]
-        else:
-            wandb_log_id = args.wandb_log_id
+def evaluate(args, reference, generations):
 
-        os.environ.pop("WANDB_NAME")
-        # original_name = wandb_name.removeprefix("geneval_")
-        wandb.init(id=wandb_log_id, resume="allow")
-        log_to_wandb = True
-        print(f"Logging to WandB {wandb_log_id}")
-    else:
-        log_to_wandb = False
-
-    torch_dtype = args.eval_dtype if args.eval_dtype in ["auto", None] else getattr(torch, args.eval_dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.gold_tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.max_length = args.max_length
+    tokenizer.model_max_length = args.max_length
 
     model = AutoModel.from_pretrained(args.gold_model_name, trust_remote_code=True)
     model.to("cuda")
@@ -185,7 +210,6 @@ def evaluate(args, reference, generations, model_name=None):
     model.config.max_length = args.max_length
 
     dataset = {"chosen": [], "rejected": []}
-    print(reference)
     for gen, ref in zip(generations["default"], reference):
         dataset["chosen"].append(gen)
         dataset["rejected"].append(ref)
@@ -193,43 +217,23 @@ def evaluate(args, reference, generations, model_name=None):
     print(f"len dataset: {len(dataset)}")
 
     gen_rewards = []
-    ref_rewards = []
 
     num_batches = math.ceil(len(dataset) / args.eval_batch_size)
 
     with torch.no_grad():
-        for batch_idx in range(num_batches):
+        for batch_idx in tqdm(range(num_batches), "evaluating"):
             start_idx = batch_idx * args.eval_batch_size
             end_idx = min((batch_idx + 1) * args.eval_batch_size, len(dataset))
             batch = dataset[start_idx:end_idx]
             inputs = tokenizer(batch["chosen"], return_tensors="pt", padding=True, truncation=True).to("cuda")
-
-            chosen_reward = model(**inputs).item()
-            inputs = tokenizer(batch["rejected"], return_tensors="pt", padding=True, truncation=True).to("cuda")
-            rejected_reward = model(**inputs).item()
+            chosen_reward = model(**inputs).cpu().detach().numpy()
             gen_rewards.extend(chosen_reward)
-            ref_rewards.extend(rejected_reward)
 
-        print(f"some gen rewards: {gen_rewards[:3]}")
-        print(f"some ref rewards: {ref_rewards[:3]}")
-        print(f"len gen rewards: {len(gen_rewards)}")
         gen_rewards = torch.tensor(gen_rewards)
-        ref_rewards = torch.tensor(ref_rewards)
+        assert gen_rewards.shape[0] == len(dataset)
 
-        win_rate = torch.tensor((gen_rewards > ref_rewards), dtype=gen_rewards.dtype).mean().item()
-        norm_reward = torch.tensor((gen_rewards - ref_rewards), dtype=gen_rewards.dtype).mean().item()
-
-    print(f"win_rate: {win_rate}")
-    print(f"norm_reward: {norm_reward}")
-    step = 0  # TODO change this
-    if log_to_wandb:
-        wandb.log(
-            {
-                "gold/win_rate": win_rate,
-                "gold/norm_reward": norm_reward,
-                "train/global_step": step,
-            }
-        )
+    avg_gen_reward = gen_rewards.mean().item()
+    print(f"avg_gen_reward: {avg_gen_reward}")
 
 
 def main_args_dict(args_dict):
@@ -240,9 +244,7 @@ def main_args_dict(args_dict):
 
     print("GENERATING")
     reference, generations = generate(generate_args)
-    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
-    # generations = {"step0": dataset["query_reference_response"]}
-    # reference = dataset["query_reference_response"]
+
     print("EVALUATING")
     evaluate(eval_args, reference, generations, generate_args.model_name)
 
@@ -255,8 +257,6 @@ if __name__ == "__main__":
 
     print("GENERATING")
     reference, generations = generate(generate_args)
-    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.train_split)
-    # generations = {"step0": dataset["query_reference_response"]}
-    # reference = dataset["query_reference_response"]
+
     print("EVALUATING")
     evaluate(eval_args, reference, generations)

@@ -1,11 +1,12 @@
-model_name: /home/mila/h/hosseinia/scratch/dpo_proj/output/sft-pythia1b-fp32-ultrafeedback-200k/final_model
+model_name: /home/mila/h/hosseinia/scratch/dpo_proj/output/sft-pythia1b-bf16-ultrafeedback-200k_ztemplate/final_model
 dataset_name: HuggingFaceH4/ultrafeedback_binarized
-train_split: train_prefs
+train_split: train_prefs[:1]
 eval_split: test_prefs
+pseudo_dataset_name: /home/mila/h/hosseinia/scratch/dpo_proj/uf_dpo_iter1_pythia1b_ngen4_20k_relabelled
 # gold_model_name: 
-output_dir: /network/scratch/h/hosseinia/dpo_porj/dpo_pythia1b_bf16_from_sft1b_ultrachat200k_nomodelchange
+output_dir: /network/scratch/h/hosseinia/dpo_porj/dpo2_pythia1b_bf16_from_sft1b_ultrachat200k_ztemplate_20k_4gen
 gold_dataset_name: HuggingFaceH4/ultrafeedback_binarized
-gold_eval_split: test_gen[:10]
+gold_eval_split: test_gen[:1]
 cache_dir: /home/mila/h/hosseinia/scratch/dpo_mn_data_cache
 beta: 0.01
 logging_steps: 10
@@ -32,3 +33,4 @@ warmup_ratio: 0.1
 generate_greedy: True
 max_length: 1024
 max_target_length: 256
+relabel_strategy: min_max

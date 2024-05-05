@@ -21,7 +21,8 @@ from datasets import DatasetDict, concatenate_datasets, load_dataset, load_from_
 from datasets.builder import DatasetGenerationError
 
 
-DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}\n{% if message['role'] == 'user' %}\n{{ '<|user|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'system' %}\n{{ '<|system|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'assistant' %}\n{{ '<|assistant|>\n'  + message['content'] + eos_token }}\n{% endif %}\n{% if loop.last and add_generation_prompt %}\n{{ '<|assistant|>' }}\n{% endif %}\n{% endfor %}"
+# DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}\n{% if message['role'] == 'user' %}\n{{ '<|user|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'system' %}\n{{ '<|system|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'assistant' %}\n{{ '<|assistant|>\n'  + message['content'] + eos_token }}\n{% endif %}\n{% if loop.last and add_generation_prompt %}\n{{ '<|assistant|>' }}\n{% endif %}\n{% endfor %}"
+ZEPHYR_TEMPLATE = "{% for message in messages %}\n{% if message['role'] == 'user' %}\n{{ '<|user|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'system' %}\n{{ '<|system|>\n' + message['content'] + eos_token }}\n{% elif message['role'] == 'assistant' %}\n{{ '<|assistant|>\n'  + message['content'] + eos_token }}\n{% endif %}\n{% if loop.last and add_generation_prompt %}\n{{ '<|assistant|>' }}\n{% endif %}\n{% endfor %}"
 
 
 def maybe_insert_system_message(messages, tokenizer):
@@ -44,6 +45,7 @@ def apply_chat_template(
     task: Literal["sft", "generation", "rm", "dpo"],
     auto_insert_empty_system_msg: bool = True,
 ):
+
     if task in ["sft", "generation"]:
         messages = example["messages"]
         # We add an empty system message if there is none
@@ -52,6 +54,19 @@ def apply_chat_template(
         example["text"] = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True if task == "generation" else False
         )
+    elif task == "rm_eval":
+        prompt_messages = example["chosen"][:-1]
+        if auto_insert_empty_system_msg:
+            maybe_insert_system_message(prompt_messages, tokenizer)
+        # Now we extract the final turn to define chosen/rejected responses
+        chosen_messages = example["chosen"][-1:]
+        rejected_messages = example["rejected"][-1:]
+        raw_prompt = " ".join([m["content"] for m in prompt_messages])
+        example["raw_prompt"] = raw_prompt
+        example["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+        example["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
+        example["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+        example["query_reference_response"] = f"[INST] {raw_prompt} [\INST] " + chosen_messages[0]["content"]
     elif task == "rm":
         if all(k in example.keys() for k in ("chosen", "rejected")):
             chosen_messages = example["chosen"]
@@ -67,6 +82,22 @@ def apply_chat_template(
             raise ValueError(
                 f"Could not format example as dialogue for `rm` task! Require `[chosen, rejected]` keys but found {list(example.keys())}"
             )
+    elif task == "dpo_gen":
+        prompt_messages = example["chosen"][:-1]
+        if auto_insert_empty_system_msg:
+            maybe_insert_system_message(prompt_messages, tokenizer)
+        # Now we extract the final turn to define chosen/rejected responses
+        chosen_messages = example["chosen"][-1:]
+        rejected_messages = example["rejected"][-1:]
+        raw_prompt = " ".join([m["content"] for m in prompt_messages])
+        example["raw_prompt"] = tokenizer.apply_chat_template(
+            prompt_messages, tokenize=False, add_generation_prompt=False
+        )  # used for saving
+        example["prompt"] = tokenizer.apply_chat_template(
+            prompt_messages, tokenize=False, add_generation_prompt=True
+        )  # used for gen
+        example["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
+        example["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
     elif task == "dpo":
         if all(k in example.keys() for k in ("chosen", "rejected")):
             # For DPO, the inputs are triples of (prompt, chosen, rejected), where `chosen` and `rejected` are the final turn of a dialogue
@@ -228,21 +259,17 @@ def mix_datasets(
 class ChatMlSpecialTokens:
     """Dataclass for special tokens used in ChatML, including system, user, assistant, bos, eos, and pad tokens."""
 
-    bos_token: str = "<|im_start|>"
-    eos_token: str = "<|im_end|>"
-    pad_token: str = "<|im_end|>"
-
     @property
     def system(self):
-        return f"{self.bos_token}system"
+        return f"system"
 
     @property
     def user(self):
-        return f"{self.bos_token}user"
+        return f"user"
 
     @property
     def assistant(self):
-        return f"{self.bos_token}assistant"
+        return f"assistant"
 
     @property
     def chat_template(self):
@@ -250,6 +277,7 @@ class ChatMlSpecialTokens:
             "{% for message in messages %}"
             f"{{{{'' + message['role'] + '\n' + message['content'] + '' + '\n'}}}}"
             "{% endfor %}"
+            "<|endoftext|>"
             "{% if add_generation_prompt %}"
             f"{{{{ '{self.assistant}\n' }}}}"
             "{% endif %}"
@@ -257,6 +285,19 @@ class ChatMlSpecialTokens:
 
 
 FORMAT_MAPPING = {"chatml": ChatMlSpecialTokens}
+
+
+def setup_chat_format_simple(
+    model: PreTrainedModel, tokenizer: PreTrainedTokenizer, format: Optional[Literal["chatml"]] = "chatml"
+):
+    if format not in FORMAT_MAPPING:
+        raise ValueError(f"Format {format} not available. Please use one of {FORMAT_MAPPING.keys()}")
+
+    # chat_format = FORMAT_MAPPING[format]()
+    tokenizer.chat_template = ZEPHYR_TEMPLATE
+    # chat_format.chat_template
+
+    return model, tokenizer
 
 
 def setup_chat_format(
@@ -283,28 +324,6 @@ def setup_chat_format(
 
     chat_format = FORMAT_MAPPING[format]()
 
-    # set special tokens and them
-    tokenizer.eos_token = chat_format.eos_token
-    tokenizer.pad_token = chat_format.pad_token
-    tokenizer.bos_token = chat_format.bos_token
-    tokenizer.add_special_tokens({"additional_special_tokens": [chat_format.bos_token, chat_format.eos_token]})
-    # set chat format for tokenizer
     tokenizer.chat_template = chat_format.chat_template
-
-    if model:
-        # resize embedding layer to a multiple of 64, https://x.com/karpathy/status/1621578354024677377
-        model.resize_token_embeddings(
-            len(tokenizer), pad_to_multiple_of=resize_to_multiple_of if resize_to_multiple_of is not None else None
-        )
-        # Update the model config to use the new eos & bos tokens
-        if getattr(model, "config", None) is not None:
-            model.config.pad_token_id = tokenizer.pad_token_id
-            model.config.bos_token_id = tokenizer.bos_token_id
-            model.config.eos_token_id = tokenizer.eos_token_id
-        # Update the generation config to use the new eos & bos token
-        if getattr(model, "generation_config", None) is not None:
-            model.generation_config.bos_token_id = tokenizer.bos_token_id
-            model.generation_config.eos_token_id = tokenizer.eos_token_id
-            model.generation_config.pad_token_id = tokenizer.pad_token_id
 
     return model, tokenizer
