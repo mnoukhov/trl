@@ -41,6 +41,9 @@ if __name__ == "__main__":
     parser = HfArgumentParser((DPOScriptArguments, TrainingArguments, ModelConfig))
     args, training_args, model_config = parser.parse_args_into_dataclasses()
 
+    if training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
+
     ################
     # Model & Tokenizer
     ################
