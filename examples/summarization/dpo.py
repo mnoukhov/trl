@@ -14,8 +14,9 @@ from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantiza
 @dataclass
 class DPOScriptArguments:
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
-    dataset_train_name: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
-    dataset_test_name: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
+    dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
+    dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
+    eval_dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     beta: float = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
     max_length: int = field(default=512, metadata={"help": "max length of each sample"})
     max_prompt_length: int = field(default=128, metadata={"help": "max length of each sample's prompt"})
@@ -82,13 +83,13 @@ if __name__ == "__main__":
     ################
     # Dataset
     ################
-    ds = load_dataset(args.dataset_name)
-    if args.sanity_check:
-        for key in ds:
-            ds[key] = ds[key].select(range(50))
+    train_dataset = load_dataset(args.dataset_name, split=args.dataset_train_split)
+    eval_dataset_name = args.eval_dataset_name if args.eval_dataset_name is not None else args.dataset_name
+    eval_dataset = load_dataset(eval_dataset_name, split=args.dataset_eval_split)
 
-    train_dataset = ds[args.dataset_train_name]
-    eval_dataset = ds[args.dataset_test_name]
+    if args.sanity_check:
+        train_dataset = train_dataset.select(range(50))
+        eval_dataset = eval_dataset.select(range(50))
 
     ################
     # Training
