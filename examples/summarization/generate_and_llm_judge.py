@@ -79,8 +79,10 @@ Preferred: <"A" or "B">
 
 
 def generate(script_args):
-    tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.padding_side = "left"
 
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
@@ -130,7 +132,7 @@ def generate(script_args):
         llm = LLM(
             model=model_name,
             revision=revision,
-            tokenizer=script_args.tokenizer_name,
+            tokenizer=tokenizer_name,
             dtype=script_args.gen_dtype,
             max_model_len=script_args.seq_length,
             tensor_parallel_size=script_args.num_gpus,
