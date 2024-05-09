@@ -26,8 +26,8 @@ def hh_combine(examples):
 class ScriptArguments:
     task_type: str = field(default="hh")
     dataset_name: str = field(default="timdettmers/openassistant-guanaco", metadata={"help": "the dataset name"})
-    dataset_train_name: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
-    dataset_test_name: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
+    dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
+    dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
     output_model_name: str = field(default="", metadata={"help": "model name to upload"})
     max_seq_length: int = field(default=512, metadata={"help": "The maximum sequence length for SFT Trainer"})
     packing: bool = field(default=False, metadata={"help": "Whether to apply data packing or not during training"})
@@ -35,6 +35,7 @@ class ScriptArguments:
     gradient_checkpointing_use_reentrant: bool = field(
         default=False, metadata={"help": "Whether to apply `use_reentrant` for gradient_checkpointing"}
     )
+    sanity_check: bool = field(default=False)
 
 
 if __name__ == "__main__":
@@ -65,8 +66,16 @@ if __name__ == "__main__":
     ################
     # Dataset
     ################
-    train_dataset = load_dataset(args.dataset_name, split=args.dataset_train_name)
-    eval_dataset = load_dataset(args.dataset_name, split=args.dataset_test_name)
+    datasets = load_dataset(args.dataset_name)
+
+    if args.sanity_check:
+        for key in datasets:
+            datasets[key] = datasets[key].select(range(100))
+
+        training_args.push_to_hub = False
+
+    train_dataset = datasets[args.dataset_train_split]
+    eval_dataset = datasets[args.dataset_eval_split]
 
     # train_dataset = train_dataset.map(lambda ex: {"text": ex['prompt'] + ex['chosen']})
     # eval_dataset = eval_dataset.map(lambda ex: {"text": ex['prompt'] + ex['chosen']})
@@ -99,7 +108,7 @@ if __name__ == "__main__":
 
     trainer.save_model(training_args.output_dir)
 
-    if PartialState().is_main_process:
+    if PartialState().is_main_process and model_config.use_peft:
         model = trainer.model.merge_and_unload()
         model.push_to_hub(args.output_model_name)
         tokenizer.push_to_hub(args.output_model_name)
