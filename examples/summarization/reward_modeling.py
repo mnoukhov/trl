@@ -215,7 +215,7 @@ if __name__ == "__main__":
             raw_datasets[script_args.dataset_train_split], preds[:, 0], preds[:, 1]
         )
 
-        preds = trainer.predict(train_dataset).predictions
+        preds = trainer.predict(eval_dataset).predictions
         relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
             raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
         )
