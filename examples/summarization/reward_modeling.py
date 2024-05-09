@@ -220,7 +220,7 @@ if __name__ == "__main__":
             raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
         )
 
-        if trainer.accelerator.is_local_main_process:
+        if trainer.accelerator.is_local_main_process and not script_args.sanity_check:
             print("Pushing")
             relabel_dataset.push_to_hub(script_args.output_dataset_name)
     else:
