@@ -46,11 +46,13 @@ tqdm.pandas()
 
 @dataclass
 class RewardScriptArguments:
+    mode: str = field(default="train", metadata={"help": "the dataset name"})
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
     tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the dataset name"})
     sanity_check: bool = field(default=False, metadata={"help": "only train on 1000 samples"})
+    output_dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
 
 
 def get_peft_config(model_config: ModelConfig):
@@ -124,6 +126,7 @@ if __name__ == "__main__":
 
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
+        # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
         model.config.pad_token_id = tokenizer.pad_token_id
 
     ################
@@ -147,7 +150,9 @@ if __name__ == "__main__":
         lambda x: len(x["input_ids_chosen"]) <= reward_config.max_length
         and len(x["input_ids_rejected"]) <= reward_config.max_length
     )
-    train_dataset = None if script_args.dataset_train_split is None else raw_datasets[script_args.dataset_train_split]
+    train_dataset = (
+        None if script_args.dataset_train_split == "None" else raw_datasets[script_args.dataset_train_split]
+    )
     eval_dataset = raw_datasets[script_args.dataset_eval_split]
 
     ################
@@ -162,8 +167,13 @@ if __name__ == "__main__":
         peft_config=get_peft_config(model_config),
     )
 
-    if train_dataset is not None:
+    if script_args.mode == "train":
         trainer.train()
         trainer.save_model(reward_config.output_dir)
+    elif script_args.mode == "eval":
+        results = trainer.evaluate()
+        print(results)
+    elif script_args.mode == "relabel":
+        pass
     else:
-        trainer.evaluate()
+        raise NotImplementedError(f"mode {script_args.mode} is not valid")

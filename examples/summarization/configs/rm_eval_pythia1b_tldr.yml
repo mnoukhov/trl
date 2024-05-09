@@ -1,7 +1,10 @@
+mode: eval
 dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
 dataset_train_split: null
 dataset_eval_split: validation
 model_name: cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr
 tokenizer_name: EleutherAI/pythia-1b-deduped
 max_length: 640
-sanity_check: True
+per_device_eval_batch_size: 8
+bf16: True
+
