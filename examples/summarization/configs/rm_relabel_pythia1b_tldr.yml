@@ -1,5 +1,6 @@
-mode: eval
+mode: relabel
 dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
+output_dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
 dataset_eval_split: validation
 model_name: cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr
 tokenizer_name: EleutherAI/pythia-1b-deduped

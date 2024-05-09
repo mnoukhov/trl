@@ -30,7 +30,7 @@ python examples/scripts/reward_modeling.py \
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
 import torch
 from datasets import DatasetDict, load_dataset
@@ -95,20 +95,20 @@ def tldr_preprocess_function(examples):
 
 def tldr_relabel_dataset_fn(batch: Dict[str, List]):
     relabel_batch = {
-        "prompt": [],
+        "query": [],
         "chosen": [],
         "rejected": [],
         "pred_chosen": [],
         "pred_rejected": [],
     }
-    for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(
-        batch["prompt"],
+    for query, chosen, rejected, pred_chosen, pred_rejected in zip(
+        batch["query"],
         batch["chosen"],
         batch["rejected"],
         batch["pred_chosen"],
         batch["pred_rejected"],
     ):
-        relabel_batch["prompt"].append(prompt)
+        relabel_batch["query"].append(query)
         if pred_chosen >= pred_rejected:
             relabel_batch["chosen"].append(chosen)
             relabel_batch["rejected"].append(rejected)
@@ -126,7 +126,7 @@ def tldr_relabel_dataset_fn(batch: Dict[str, List]):
 def tldr_relabel_dataset(dataset, pred_chosen, pred_rejected):
     dataset = dataset.add_column("pred_chosen", pred_chosen)
     dataset = dataset.add_column("pred_rejected", pred_rejected)
-    dataset = dataset.map(tldr_relabel_dataset_fn, batched=True)
+    dataset = dataset.map(tldr_relabel_dataset_fn, batched=True, remove_columns=dataset.column_names)
     return dataset
 
 
@@ -163,7 +163,6 @@ if __name__ == "__main__":
 
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
-        # tokenizer.add_special_tokens({"pad_token": "[PAD]"})
         model.config.pad_token_id = tokenizer.pad_token_id
 
     ################
@@ -187,9 +186,7 @@ if __name__ == "__main__":
         lambda x: len(x["input_ids_chosen"]) <= reward_config.max_length
         and len(x["input_ids_rejected"]) <= reward_config.max_length
     )
-    train_dataset = (
-        None if script_args.dataset_train_split == "None" else raw_datasets[script_args.dataset_train_split]
-    )
+    train_dataset = raw_datasets[script_args.dataset_train_split]
     eval_dataset = raw_datasets[script_args.dataset_eval_split]
 
     ################
@@ -212,17 +209,15 @@ if __name__ == "__main__":
         print(results)
     elif script_args.mode == "relabel":
         relabel_dataset = DatasetDict()
-        preds = trainer.predict(train_dataset)
-        import pdb
 
-        pdb.set_trace()
-        relabel_dataset[script_args.train_dataset_split] = tldr_relabel_dataset(
-            raw_datasets[script_args.train_dataset_split], preds[:, 0], preds[:, 1]
+        preds = trainer.predict(train_dataset).predictions
+        relabel_dataset[script_args.dataset_train_split] = tldr_relabel_dataset(
+            raw_datasets[script_args.dataset_train_split], preds[:, 0], preds[:, 1]
         )
 
-        preds = trainer.predict(train_dataset)
-        relabel_dataset[script_args.train_dataset_split] = tldr_relabel_dataset(
-            raw_datasets[script_args.train_dataset_split], preds[:, 0], preds[:, 1]
+        preds = trainer.predict(train_dataset).predictions
+        relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
+            raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
         )
 
         if trainer.accelerator.is_local_main_process:
