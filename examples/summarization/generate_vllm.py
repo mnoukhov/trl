@@ -34,6 +34,7 @@ class ScriptArguments:
     batch_size: Optional[int] = field(default=4)
     max_prompt_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
+    sample_n: Optional[int] = field(default=2, metadata={"help": "Gen temperature"})
     temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     top_p: Optional[float] = field(default=1.0, metadata={"help": "Gen temperature"})
     max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
@@ -42,6 +43,8 @@ class ScriptArguments:
     lora_model: Optional[bool] = field(default=False)
     base_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
     base_model_revision: Optional[str] = field(default=None)
+    ref_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
+    ref_model_revision: Optional[str] = field(default=None)
 
 
 def prepare_vllm_model(script_args):
@@ -71,6 +74,7 @@ def prepare_vllm_model(script_args):
             model = AutoPeftModelForCausalLM.from_pretrained(
                 script_args.model_name, revision=script_args.revision, device_map="cpu"
             )
+
         merged = model.merge_and_unload()
         model_save_path = f"/home/toolkit/trl_results/{script_args.model_name}_merged/{script_args.revision}"
         merged.save_pretrained(model_save_path)
@@ -112,7 +116,7 @@ def generate_vllm(script_args):
         temperature=script_args.temperature,
         max_tokens=script_args.max_new_tokens,
         top_p=script_args.top_p,
-        n=2,
+        n=script_args.sample_n,
     )
 
     generations = llm.generate(prompts, sampling_params)
@@ -128,7 +132,11 @@ def generate_vllm(script_args):
                     "rejected": gen.outputs[1].text,
                 }
             else:
-                print("skipping gen, only 1 output")
+                row = {"prompt": gen.prompt}
+                for i, output in enumerate(gen.outputs):
+                    row[f"target{i}"] = output.text
+
+                yield row
 
     ds_info = DatasetInfo(
         f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
@@ -153,18 +161,31 @@ def relabel(script_args, dataset):
         base_model = AutoModelForCausalLM.from_pretrained(
             script_args.base_model_name,
             revision=script_args.base_model_revision,
+            torch_dtype=torch_dtype,
         )
-        # merge the model and save
         model = PeftModelForCausalLM.from_pretrained(
             base_model,
             script_args.model_name,
             revision=script_args.revision,
             torch_dtype=torch_dtype,
         )
-    else:
+    elif script_args.lora_model:
         model = AutoPeftModelForCausalLM.from_pretrained(
             script_args.model_name,
             revision=script_args.revision,
+            torch_dtype=torch_dtype,
+        )
+        ref_model = None
+    else:
+        assert script_args.ref_model is not None
+        model = AutoModelForCausalLM.from_pretrained(
+            script_args.model_name,
+            revision=script_args.revision,
+            torch_dtype=torch_dtype,
+        )
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            script_args.ref_model_name,
+            revision=script_args.ref_model_revision,
             torch_dtype=torch_dtype,
         )
 
@@ -182,6 +203,7 @@ def relabel(script_args, dataset):
 
     dpo_trainer = DPOTrainer(
         model=model,
+        ref_model=ref_model,
         tokenizer=tokenizer,
         args=training_args,
         max_length=script_args.max_new_tokens + script_args.max_prompt_length,

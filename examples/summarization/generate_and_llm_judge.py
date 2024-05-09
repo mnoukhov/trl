@@ -1,21 +1,15 @@
 import gc
 import os
+import random
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import pandas as pd
 import torch
-from datasets import Dataset, builder, load_dataset
+from datasets import builder, load_dataset
 from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
-from scalar_rm_model import ScalarModel, ScalarModelConfig
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    HfArgumentParser,
-    Trainer,
-    TrainingArguments,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
 from vllm import LLM, SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
 
@@ -52,20 +46,43 @@ class GenerateScriptArguments:
 
 
 @dataclass
-class EvalScriptArguments:
+class LLMJudgeArguments:
     wandb_log_id: Optional[str] = field(default=None)
-    gold_model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
-    gold_model_revision: Optional[str] = field(default=None)
-    eval_dtype: Optional[str] = field(default="auto")
-    eval_batch_size: Optional[int] = field(default=16)
-    max_length: Optional[int] = field(default=512)
-    gold_tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
-    flash_attention: Optional[bool] = field(default=False)
+    llm_judge_model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
+    llm_judge_model_revision: Optional[str] = field(default=None)
+    llm_judge_dtype: Optional[str] = field(default="auto")
+    llm_judge_temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
+    llm_judge_top_p: Optional[float] = field(default=0.9, metadata={"help": "Gen temperature"})
+    llm_judge_max_new_tokens: Optional[int] = field(default=None, metadata={"help": "max new tokens"})
+    seed: Optional[int] = field(default=0)
+
+
+OPTIONS = ["A", "B"]
+
+TEMPLATE = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
+
+### Post:
+{post}
+
+### Summary A:
+{response0}
+
+### Summary B:
+{response1}
+
+### Instructions:
+FIRST provide a one-sentence comparison of the two summaries, explaining which \
+you prefer and why. SECOND, on a new line, state only "A" or "B" to indicate your choice. Your response should use the format:
+Comparison: <one-sentence comparison and explanation>
+Preferred: <"A" or "B">
+"""
 
 
 def generate(script_args):
-    tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.padding_side = "left"
 
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
@@ -76,8 +93,6 @@ def generate(script_args):
         max_tokens=script_args.max_new_tokens,
         top_p=script_args.top_p,
         n=1,
-        include_stop_str_in_output=True,
-        skip_special_tokens=False,
     )
 
     refs = list_repo_refs(script_args.model_name, repo_type="model")
@@ -117,7 +132,7 @@ def generate(script_args):
         llm = LLM(
             model=model_name,
             revision=revision,
-            tokenizer=script_args.tokenizer_name,
+            tokenizer=tokenizer_name,
             dtype=script_args.gen_dtype,
             max_model_len=script_args.seq_length,
             tensor_parallel_size=script_args.num_gpus,
@@ -128,7 +143,7 @@ def generate(script_args):
 
         generations = llm.generate(prompts, sampling_params)
 
-        texts = [output.prompt + output.outputs[0].text for output in generations]
+        texts = [output.outputs[0].text for output in generations]
 
         gens[revision_name] = texts
 
@@ -157,9 +172,14 @@ def generate(script_args):
             print(sampling_params, file=f)
 
     print(f"generated {len(gens)} steps")
-    reference = dataset["query_reference_response"]
+    reference = []
+    for ref_response in dataset["reference_response"]:
+        if ref_response.endswith("<|endoftext|>"):
+            ref_response = ref_response.split("<|endoftext|>")[0]
 
-    return reference, gens
+        reference.append(ref_response.strip())
+
+    return prompts, reference, gens
 
     # ds_info = DatasetInfo(
     #     f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
@@ -169,7 +189,32 @@ def generate(script_args):
     # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
 
-def evaluate(args, reference, generations, model_name=None):
+def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
+    llm_judge_prompts = []
+    generated_indices = []
+    random.seed(seed)
+    for prompt, ref, gen in zip(prompts, reference, generated):
+        generated_idx = random.randint(0, 1)
+        if generated_idx == 0:
+            response0 = gen.strip()
+            response1 = ref.strip()
+        else:
+            response0 = ref.strip()
+            response1 = gen.strip()
+
+        query = TEMPLATE.format(post=prompt, response0=response0, response1=response1)
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": query},
+        ]
+        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        llm_judge_prompts.append(formatted_prompt)
+        generated_indices.append(generated_idx)
+
+    return llm_judge_prompts, generated_indices
+
+
+def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
     if args.wandb_log_id is not None:
         # don't overwrite the wandb name of the original run
         if args.wandb_log_id == "model_name":
@@ -186,92 +231,64 @@ def evaluate(args, reference, generations, model_name=None):
     else:
         log_to_wandb = False
 
-    torch_dtype = args.eval_dtype if args.eval_dtype in ["auto", None] else getattr(torch, args.eval_dtype)
-    tokenizer = AutoTokenizer.from_pretrained(args.gold_tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-
-    if args.gold_model_name.startswith("vwxyzjn"):
-        # ScalarModel
-        scalar_model_config = ScalarModelConfig.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-        )
-        # hack to remove the path
-        # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
-        if scalar_model_config.base_model.startswith("models/"):
-            original_model = scalar_model_config.base_config["_name_or_path"].split("/")[2]
-            sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
-            scalar_model_config.base_config["_name_or_path"] = sft_model
-            scalar_model_config.base_model = sft_model
-            _, seed, _ = args.gold_model_revision.split("__")
-            scalar_model_config.base_model_revision = f"sft__{seed}__1708611267"
-
-        # quantization_config = get_quantization_config(model_config)
-        model = ScalarModel.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            config=scalar_model_config,
-            torch_dtype=torch_dtype,
-            use_flash_attention_2=args.flash_attention,
-        )
-    else:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            torch_dtype=torch_dtype,
-        )
-
-    model.config.pad_token_id = tokenizer.pad_token_id
-
-    training_args = TrainingArguments(per_device_eval_batch_size=int(args.eval_batch_size), output_dir=".")
-
-    trainer = Trainer(
-        model=model,
-        tokenizer=tokenizer,
-        args=training_args,
+    llm = LLM(
+        model=args.llm_judge_model_name,
+        revision=args.llm_judge_model_revision,
+        dtype=args.llm_judge_dtype,
+        tensor_parallel_size=args.num_gpus,
+        trust_remote_code=True,
     )
 
-    def tokenize_and_add_eos(tokenizer, text_column, max_length):
-        def fn(example):
-            text = example[text_column]
-            ends_with_eos = text.endswith(tokenizer.eos_token)
-            if not ends_with_eos:
-                text += tokenizer.eos_token
+    tokenizer = llm.get_tokenizer()
 
-            tokenized = tokenizer(
-                text,
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-            )
-
-            # guarantee that last token is EOS if truncated
-            token_length = sum(tokenized["attention_mask"])
-            if token_length == max_length:
-                tokenized["input_ids"][-1] = tokenizer.eos_token_id
-
-            return tokenized
-
-        return fn
+    sampling_params = SamplingParams(
+        temperature=args.llm_judge_temperature,
+        max_tokens=args.llm_judge_max_new_tokens,
+        top_p=args.llm_judge_top_p,
+        n=1,
+        stop_token_ids=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")],
+    )
 
     ## get reference continuation rewards
-    dataset = Dataset.from_dict({"reference": reference})
-    dataset = dataset.map(tokenize_and_add_eos(tokenizer, "reference", args.max_length))
-
-    ref_results = trainer.predict(dataset)
-    ref_rewards = ref_results.predictions[0]
-
     step = 0
-    for step_str, query_response in generations.items():
-        dataset = Dataset.from_dict({"query_response": query_response})
-        dataset = dataset.map(tokenize_and_add_eos(tokenizer, "query_response", args.max_length))
-
+    for step_str, generated in generations.items():
         print(f"Evaluating {step_str}")
-        results = trainer.predict(dataset)
-        gen_rewards = results.predictions[0]
+        llm_judge_prompts, generated_indices = create_llm_judge_prompts(
+            tokenizer, prompts, reference, generated, args.seed
+        )
+        llm_judge_output = llm.generate(llm_judge_prompts, sampling_params)
+        llm_judge_texts = [output.outputs[0].text for output in llm_judge_output]
 
-        win_rate = (gen_rewards > ref_rewards).mean().item()
-        norm_reward = (gen_rewards - ref_rewards).mean().item()
+        comparisons, preferred = [], []
+        for llm_judge_completion in llm_judge_texts:
+            if "Comparison:" in llm_judge_completion:
+                comparisons.append(llm_judge_completion.split("Comparison:")[1].split("Preferred:")[0].strip())
+            else:
+                comparisons.append("")
+
+            if "Preferred:" in llm_judge_completion:
+                preferred.append(llm_judge_completion.split("Preferred:")[1].strip())
+            else:
+                preferred.append("X")
+
+        full_convo = [prompt + text for prompt, text in zip(llm_judge_prompts, llm_judge_texts)]
+
+        winner = []
+        win_sum = 0
+        num_fails = 0
+        for pref, gen_idx in zip(preferred, generated_indices):
+            if pref == OPTIONS[gen_idx]:
+                winner.append("ours")
+                win_sum += 1
+            elif pref == OPTIONS[1 - gen_idx]:
+                winner.append("reference")
+            else:
+                winner.append("fail")
+                num_fails += 1
+
+        win_rate = win_sum / (len(preferred) - num_fails)
+        if num_fails > 0:
+            print(f"Failed to get preference from {num_fails} examples out of {len(preferred)}")
 
         if step_str.startswith("step"):
             step_str = step_str.removeprefix("step")
@@ -285,40 +302,50 @@ def evaluate(args, reference, generations, model_name=None):
         if log_to_wandb:
             wandb.log(
                 {
-                    "gold/win_rate": win_rate,
-                    "gold/norm_reward": norm_reward,
+                    "llm_judge/win_rate": win_rate,
                     "train/global_step": step,
                 }
             )
 
-        print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
+        print(f"step {step}: win-rate {win_rate}")
+
+        if args.output_dir is not None:
+            df = pd.DataFrame(
+                {
+                    "prompt": prompts,
+                    "reference": reference,
+                    "generated": generated,
+                    "winner": winner,
+                    "llm_prompt": llm_judge_prompts,
+                    "full_conov": full_convo,
+                    "generated_idx": generated_indices,
+                }
+            )
+            df.to_csv(os.path.join(args.output_dir, f"step{step}.csv"))
+
+
+def main(generate_args, eval_args):
+    eval_args.num_gpus = generate_args.num_gpus
+    eval_args.output_dir = generate_args.output_dir
+
+    print("GENERATING")
+    prompts, reference, generations = generate(generate_args)
+    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
+    # generations = {"step0": dataset["query_reference_response"]}
+    # prompts = dataset["query"]
+    # reference = dataset["reference_response"]
+    # generations = {"step0": dataset["reference_response"]}
+    print("EVALUATING")
+    llm_as_a_judge(eval_args, prompts, reference, generations, generate_args.model_name)
 
 
 def main_args_dict(args_dict):
-    parser = HfArgumentParser([GenerateScriptArguments, EvalScriptArguments])
+    parser = HfArgumentParser([GenerateScriptArguments, LLMJudgeArguments])
     generate_args, eval_args = parser.parse_dict(args_dict)
-    if eval_args.gold_tokenizer_name is None:
-        eval_args.gold_tokenizer_name = generate_args.tokenizer_name
-
-    print("GENERATING")
-    reference, generations = generate(generate_args)
-    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
-    # generations = {"step0": dataset["query_reference_response"]}
-    # reference = dataset["query_reference_response"]
-    print("EVALUATING")
-    evaluate(eval_args, reference, generations, generate_args.model_name)
+    main(generate_args, eval_args)
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser([GenerateScriptArguments, EvalScriptArguments])
+    parser = HfArgumentParser([GenerateScriptArguments, LLMJudgeArguments])
     generate_args, eval_args = parser.parse_args_into_dataclasses()
-    if eval_args.gold_tokenizer_name is None:
-        eval_args.gold_tokenizer_name = generate_args.tokenizer_name
-
-    print("GENERATING")
-    reference, generations = generate(generate_args)
-    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.train_split)
-    # generations = {"step0": dataset["query_reference_response"]}
-    # reference = dataset["query_reference_response"]
-    print("EVALUATING")
-    evaluate(eval_args, reference, generations)
+    main(generate_args, eval_args)
