@@ -27,6 +27,7 @@ python examples/scripts/reward_modeling.py \
     --evaluation_strategy="steps" \
     --max_length=512 \
 """
+
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
@@ -78,9 +79,9 @@ def tldr_preprocess_function(examples):
         "input_ids_rejected": [],
         "attention_mask_rejected": [],
     }
-    for query, chosen, rejected in zip(examples["query"], examples["chosen"], examples["rejected"]):
-        tokenized_chosen = tokenizer(query + chosen)
-        tokenized_rejected = tokenizer(query + rejected)
+    for query_chosen, query_rejected in zip(examples["query_chosen"], examples["query_rejected"]):
+        tokenized_chosen = tokenizer(query_chosen)
+        tokenized_rejected = tokenizer(query_rejected)
 
         new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
         new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
@@ -122,8 +123,7 @@ if __name__ == "__main__":
         )
 
     if not tokenizer.pad_token:
-        print("here")
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+        tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
         model.config.pad_token_id = tokenizer.pad_token_id
 
     ################
@@ -135,6 +135,9 @@ if __name__ == "__main__":
         for key in raw_datasets:
             raw_datasets[key] = raw_datasets[key].select(range(100))
 
+        reward_config.push_to_hub = False
+        reward_config.report_to = ""
+
     # Preprocess the dataset and filter out examples that are longer than args.max_length
     raw_datasets = raw_datasets.map(
         tldr_preprocess_function,
@@ -144,7 +147,7 @@ if __name__ == "__main__":
         lambda x: len(x["input_ids_chosen"]) <= reward_config.max_length
         and len(x["input_ids_rejected"]) <= reward_config.max_length
     )
-    train_dataset = raw_datasets[script_args.dataset_train_split]
+    train_dataset = None if script_args.dataset_train_split is None else raw_datasets[script_args.dataset_train_split]
     eval_dataset = raw_datasets[script_args.dataset_eval_split]
 
     ################
@@ -158,5 +161,9 @@ if __name__ == "__main__":
         eval_dataset=eval_dataset,
         peft_config=get_peft_config(model_config),
     )
-    trainer.train()
-    trainer.save_model(reward_config.output_dir)
+
+    if train_dataset is not None:
+        trainer.train()
+        trainer.save_model(reward_config.output_dir)
+    else:
+        trainer.evaluate()
