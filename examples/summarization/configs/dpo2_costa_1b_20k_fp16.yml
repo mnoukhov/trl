@@ -23,11 +23,11 @@ eval_steps: 0.2
 save_steps: 0.2
 beta: 0.05
 max_steps: -1
-num_train_epochs: 1
+num_train_epochs: 2
 load_in_8bit: False
 bf16: False
 fp16: True
-learning_rate: 3e-5
+learning_rate: 1e-5
 use_peft: True
 lora_r: 16
 lora_alpha: 32

@@ -1,0 +1,36 @@
+## costa stuff
+model_name: sophiex/pythia-1b-sft_hh_rlhf
+# model_revision: null
+dataset_name: sophiex/hh-rlhf
+tokenizer_name: EleutherAI/pythia-1b-deduped
+prompt_field: prompt
+eval_split: test
+max_prompt_length: 256
+max_target_length: 256
+max_length: 512
+lr_scheduler_type: cosine
+## hub stuff
+push_to_hub: True
+push_to_hub_organization: sophiex
+## training stuff
+save_strategy: steps
+gold_eval: none
+gold_dataset_name: sophiex/hh-rlhf
+gold_target_field: chosen
+gold_eval_split: test
+eval_steps: 0.2
+save_steps: 0.2
+beta: 0.1
+max_steps: -1
+num_train_epochs: 1
+load_in_8bit: False
+bf16: False
+fp16: True
+learning_rate: 1e-5
+use_peft: True
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.
+gradient_accumulation_steps: 4
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4

@@ -29,6 +29,7 @@ class ScriptArguments:
     dataset_name: Optional[str] = field(
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
+    dataset_prompt_field: Optional[str] = field(default="query")
     train_split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
     batch_size: Optional[int] = field(default=4)
     max_prompt_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
@@ -65,14 +66,15 @@ def prepare_vllm_model(script_args):
             base_model = AutoModelForCausalLM.from_pretrained(
                 script_args.base_model_name, revision=script_args.base_model_revision
             )
+            # merge the model and save
             model = PeftModelForCausalLM.from_pretrained(
-                base_model, script_args.model_name, revision=script_args.revision, device="cpu"
+                base_model, script_args.model_name, revision=script_args.revision, device_map="cpu"
             )
         else:
             model = AutoPeftModelForCausalLM.from_pretrained(
-                script_args.model_name, revision=script_args.revision, device="cpu"
+                script_args.model_name, revision=script_args.revision, device_map="cpu"
             )
-        # merge the model and save
+
         merged = model.merge_and_unload()
         model_save_path = f"/home/toolkit/trl_results/{script_args.model_name}_merged/{script_args.revision}"
         merged.save_pretrained(model_save_path)
@@ -108,7 +110,7 @@ def generate_vllm(script_args):
 
     dataset = load_dataset(script_args.dataset_name, split=script_args.train_split)
 
-    prompts = dataset["query"]
+    prompts = dataset[script_args.dataset_prompt_field]
 
     sampling_params = SamplingParams(
         temperature=script_args.temperature,
@@ -167,7 +169,6 @@ def relabel(script_args, dataset):
             revision=script_args.revision,
             torch_dtype=torch_dtype,
         )
-        ref_model = None
     elif script_args.lora_model:
         model = AutoPeftModelForCausalLM.from_pretrained(
             script_args.model_name,

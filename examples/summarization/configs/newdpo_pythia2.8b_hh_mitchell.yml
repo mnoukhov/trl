@@ -1,0 +1,29 @@
+## model and dataset
+model_name: "mnoukhov/pythia-2.8b-mitchell-sft_hh_rlhf"
+# output name
+hub_model_id: "mnoukhov/pythia-2.8b-mitchell-dpo_hh_rlhf"
+dataset_name: "sophiex/hh-rlhf"
+report_to: "wandb"
+## dpo
+learning_rate: 0.0000005
+lr_scheduler_type: constant_with_warmup
+warmup_steps: 150
+fp16: False
+bf16: True
+gradient_accumulation_steps: 16
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+num_train_epochs: 1
+max_length: 512
+max_prompt_length: 256 
+max_target_length: 256
+beta: 0.1
+## peft
+use_peft: False
+# lora_r: 16
+# lora_alpha: 32
+gradient_checkpointing: True
+evaluation_strategy: "steps"
+eval_steps: 0.2
+logging_steps: 100
+ddp_find_unused_parameters: False

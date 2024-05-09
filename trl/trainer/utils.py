@@ -20,9 +20,19 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from accelerate import PartialState
+from peft import LoraConfig
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
-from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizerBase, TrainerCallback
+from transformers import (
+    BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+    TrainerCallback,
+)
+
+from .model_config import ModelConfig
 
 
 class AdaptiveKLController:
@@ -196,6 +206,7 @@ class RewardDataCollatorWithPadding:
         return_tensors (`str`, `optional`, defaults to `"pt"`):
             The tensor type to use.
     """
+
     tokenizer: PreTrainedTokenizerBase
     padding: Union[bool, str] = True
     max_length: Optional[int] = None
@@ -288,6 +299,7 @@ class DPODataCollatorWithPadding:
         truncation_mode: (`str`, defaults to "keep_end"):
             The truncation mode to use when truncating the prompt.
     """
+
     tokenizer: PreTrainedTokenizerBase
     model: Optional[PreTrainedModel] = None
     padding: Union[bool, str] = True
@@ -766,3 +778,49 @@ def neftune_post_forward_hook(module, input, output):
         mag_norm = module.neftune_noise_alpha / torch.sqrt(dims)
         output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
     return output
+
+
+def get_kbit_device_map():
+    # if is_xpu_available():
+    #     return {"": f"xpu:{PartialState().local_process_index}"}
+    if torch.cuda.is_available():
+        return {"": PartialState().local_process_index}
+    else:
+        return None
+
+
+def get_peft_config(model_config: ModelConfig):
+    if model_config.use_peft is False:
+        return None
+
+    target_modules = model_config.lora_target_modules if model_config.lora_target_modules is not None else "all-linear"
+
+    peft_config = LoraConfig(
+        r=model_config.lora_r,
+        lora_alpha=model_config.lora_alpha,
+        lora_dropout=model_config.lora_dropout,
+        bias="none",
+        task_type=model_config.lora_task_type,
+        target_modules=target_modules,
+        modules_to_save=model_config.lora_modules_to_save,
+    )
+
+    return peft_config
+
+
+def get_quantization_config(model_config: ModelConfig):
+    if model_config.load_in_4bit:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=model_config.torch_dtype,  # For consistency with model weights, we use the same value as `torch_dtype`
+            bnb_4bit_quant_type=model_config.bnb_4bit_quant_type,
+            bnb_4bit_use_double_quant=model_config.use_bnb_nested_quant,
+        )
+    elif model_config.load_in_8bit:
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
+    else:
+        quantization_config = None
+
+    return quantization_config

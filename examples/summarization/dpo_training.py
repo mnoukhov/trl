@@ -477,6 +477,7 @@ if __name__ == "__main__":
     if script_args.mode == "train":
         last_checkpoint = get_last_checkpoint(script_args.output_dir)
         dpo_trainer.train(resume_from_checkpoint=last_checkpoint)
+        dpo_trainer.save_model(script_args.output_dir + "/final_model")
     elif script_args.mode == "eval":
         print("evaluating")
         results = dpo_trainer.evaluate()

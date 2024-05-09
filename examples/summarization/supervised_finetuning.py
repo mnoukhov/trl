@@ -42,7 +42,7 @@ class ScriptArguments:
         default="train", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
     )
     eval_split: Optional[str] = field(
-        default="valid[:2000]",
+        default="test",#"valid[:2000]",
         metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"},
     )
     log_with: Optional[str] = field(default="wandb", metadata={"help": "use 'wandb' to log with wandb"})
@@ -72,7 +72,6 @@ class ScriptArguments:
     load_in_8bit: Optional[bool] = field(default=True, metadata={"help": "load the model in 8 bits precision"})
     load_in_4bit: Optional[bool] = field(default=False, metadata={"help": "load the model in 4 bits precision"})
     use_peft: Optional[bool] = field(default=True, metadata={"help": "Wether to use PEFT or not to train adapters"})
-    lora_all_linear: Optional[bool] = field(default=False, metadata={"help": "lora adapter on all linear layers"})
     lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
     lora_dropout: Optional[float] = field(default=0.05, metadata={"help": "the lora dropout parameter"})
     lora_r: Optional[int] = field(default=8, metadata={"help": "the lora r parameter"})
@@ -93,7 +92,6 @@ class ScriptArguments:
 
     output_dir: Optional[str] = field(default="./results", metadata={"help": "the output directory"})
     output_model_name: Optional[str] = field(default=None, metadata={"help": "the model pushed to hub"})
-    log_freq: Optional[int] = field(default=1, metadata={"help": "the logging frequency"})
     logging_steps: Optional[int] = field(default=10, metadata={"help": "the number of logging steps"})
     eval_steps: Optional[int] = field(default=1000, metadata={"help": "the number of steps to eval at"})
     save_steps: Optional[int] = field(default=1000, metadata={"help": "the number of steps to save at"})
@@ -101,31 +99,6 @@ class ScriptArguments:
     seed: Optional[int] = field(default=0)
     just_eval: Optional[bool] = field(default=False)
     resume_from_checkpoint: Optional[str] = field(default=None)
-
-
-def find_all_linear_names(args, model):
-    if isinstance(model.transformer, GPT2Model):
-        cls = Conv1D
-    else:
-        cls = (
-            bnb.nn.Linear4bit if args.load_in_4bit else (bnb.nn.Linear8bitLt if args.load_in_8bit else torch.nn.Linear)
-        )
-
-    lora_module_names = set()
-    for name, module in model.named_modules():
-        if isinstance(module, cls):
-            names = name.split(".")
-            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
-
-    if "lm_head" in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove("lm_head")
-
-    if "score" in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove("score")
-
-    print(lora_module_names)
-
-    return list(lora_module_names)
 
 
 def chars_token_ratio(dataset, tokenizer, nb_examples=400):
@@ -145,10 +118,10 @@ def chars_token_ratio(dataset, tokenizer, nb_examples=400):
 
 
 def prepare_sample_text(examples):
-    if isinstance(examples["label"], str):
-        return examples["prompt"] + examples["label"]
-    elif isinstance(examples["label"], list):
-        return list(map(str.__add__, examples["prompt"], examples["label"]))
+    if isinstance(examples["chosen"], str):
+        return examples["prompt"] + examples["chosen"]
+    elif isinstance(examples["chosen"], list):
+        return list(map(str.__add__, examples["prompt"], examples["chosen"]))
     else:
         raise Exception(f"weird input examples of type {type(examples)}")
 
@@ -261,16 +234,11 @@ if __name__ == "__main__":
     )
 
     if args.use_peft:
-        if args.lora_all_linear:
-            target_modules = find_all_linear_names(args, model)
-        else:
-            target_modules = None
-
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
-            target_modules=target_modules,
+            target_modules="all-linear",
             bias="none",
             task_type="CAUSAL_LM",
         )
@@ -327,10 +295,10 @@ if __name__ == "__main__":
             else:
                 model_cls = AutoPeftModelForCausalLM
 
-            model = model_cls.from_pretrained(
-                output_dir, device_map="auto", torch_dtype=trainer.model.config.torch_dtype
-            )
-            model = model.merge_and_unload()
+            # model = model_cls.from_pretrained(
+            #     output_dir, device_map="auto", torch_dtype=trainer.model.config.torch_dtype
+            # )
+            model = trainer.model.merge_and_unload()
 
             output_merged_dir = os.path.join(args.output_dir, "final_merged_checkpoint")
             model.save_pretrained(output_merged_dir, safe_serialization=True)
