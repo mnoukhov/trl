@@ -30,10 +30,10 @@ python examples/scripts/reward_modeling.py \
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, List
 
 import torch
-from datasets import load_dataset
+from datasets import DatasetDict, load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, HfArgumentParser
@@ -91,6 +91,43 @@ def tldr_preprocess_function(examples):
         new_examples["attention_mask_rejected"].append(tokenized_rejected["attention_mask"])
 
     return new_examples
+
+
+def tldr_relabel_dataset_fn(batch: Dict[str, List]):
+    relabel_batch = {
+        "prompt": [],
+        "chosen": [],
+        "rejected": [],
+        "pred_chosen": [],
+        "pred_rejected": [],
+    }
+    for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(
+        batch["prompt"],
+        batch["chosen"],
+        batch["rejected"],
+        batch["pred_chosen"],
+        batch["pred_rejected"],
+    ):
+        relabel_batch["prompt"].append(prompt)
+        if pred_chosen >= pred_rejected:
+            relabel_batch["chosen"].append(chosen)
+            relabel_batch["rejected"].append(rejected)
+            relabel_batch["pred_chosen"].append(pred_chosen)
+            relabel_batch["pred_rejected"].append(pred_rejected)
+        else:
+            relabel_batch["chosen"].append(rejected)
+            relabel_batch["rejected"].append(chosen)
+            relabel_batch["pred_chosen"].append(pred_rejected)
+            relabel_batch["pred_rejected"].append(pred_chosen)
+
+    return relabel_batch
+
+
+def tldr_relabel_dataset(dataset, pred_chosen, pred_rejected):
+    dataset = dataset.add_column("pred_chosen", pred_chosen)
+    dataset = dataset.add_column("pred_rejected", pred_rejected)
+    dataset = dataset.map(tldr_relabel_dataset_fn, batched=True)
+    return dataset
 
 
 if __name__ == "__main__":
@@ -174,6 +211,22 @@ if __name__ == "__main__":
         results = trainer.evaluate()
         print(results)
     elif script_args.mode == "relabel":
-        pass
+        relabel_dataset = DatasetDict()
+        preds = trainer.predict(train_dataset)
+        import pdb
+
+        pdb.set_trace()
+        relabel_dataset[script_args.train_dataset_split] = tldr_relabel_dataset(
+            raw_datasets[script_args.train_dataset_split], preds[:, 0], preds[:, 1]
+        )
+
+        preds = trainer.predict(train_dataset)
+        relabel_dataset[script_args.train_dataset_split] = tldr_relabel_dataset(
+            raw_datasets[script_args.train_dataset_split], preds[:, 0], preds[:, 1]
+        )
+
+        if trainer.accelerator.is_local_main_process:
+            print("Pushing")
+            relabel_dataset.push_to_hub(script_args.output_dataset_name)
     else:
         raise NotImplementedError(f"mode {script_args.mode} is not valid")
