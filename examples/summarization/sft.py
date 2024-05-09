@@ -13,7 +13,7 @@ from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantiza
 tqdm.pandas()
 
 
-def tldr_combine(examples):
+def hh_combine(examples):
     if isinstance(examples["chosen"], str):
         return examples["prompt"] + examples["chosen"]
     elif isinstance(examples["chosen"], list):
@@ -24,8 +24,8 @@ def tldr_combine(examples):
 
 @dataclass
 class ScriptArguments:
+    task_type: str = field(default="hh")
     dataset_name: str = field(default="timdettmers/openassistant-guanaco", metadata={"help": "the dataset name"})
-    dataset_text_field: str = field(default=None, metadata={"help": "the text field of the dataset"})
     dataset_train_name: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_test_name: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
     output_model_name: str = field(default="", metadata={"help": "model name to upload"})
@@ -71,6 +71,13 @@ if __name__ == "__main__":
     # train_dataset = train_dataset.map(lambda ex: {"text": ex['prompt'] + ex['chosen']})
     # eval_dataset = eval_dataset.map(lambda ex: {"text": ex['prompt'] + ex['chosen']})
 
+    if args.task_type == "tldr":
+        formatting_func = None
+        dataset_text_field = "query_reference_response"
+    elif args.task_type == "hh":
+        formatting_func = hh_combine
+        dataset_text_field = None
+
     ################
     # Training
     ################
@@ -80,11 +87,11 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        # dataset_text_field=args.dataset_text_field,
         max_seq_length=args.max_seq_length,
         tokenizer=tokenizer,
         packing=args.packing,
-        formatting_func=tldr_combine,
+        formatting_func=formatting_func,
+        dataset_text_field=dataset_text_field,
         peft_config=get_peft_config(model_config),
     )
 

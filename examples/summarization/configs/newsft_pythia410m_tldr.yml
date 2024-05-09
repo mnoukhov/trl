@@ -1,0 +1,22 @@
+task_type: tldr
+model_name: EleutherAI/pythia-410m-deduped
+output_model_name: mnoukhov/pythia-2.8b-sft_hh_rlhf
+dataset_name: vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144
+report_to: "wandb"
+learning_rate: 1e-5
+lr_scheduler_type: cosine
+bf16: True
+gradient_accumulation_steps: 32
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+num_train_epochs: 1
+max_seq_length: 1024
+use_peft: True
+lora_r: 16
+lora_alpha: 32
+gradient_checkpointing: True
+evaluation_strategy: "steps"
+eval_steps: 0.2
+logging_steps: 100
+# ddp_find_unused_parameters: False
+sanity_check: True
