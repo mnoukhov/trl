@@ -236,6 +236,7 @@ def evaluate(args, reference, generations, model_name=None):
         tokenizer=tokenizer,
         device_map="auto",
         function_to_apply="none",
+        batch_size=args.eval_batch_size,
     )
 
     ref_outputs = reward_pipeline(reference)
