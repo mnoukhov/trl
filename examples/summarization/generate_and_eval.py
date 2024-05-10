@@ -42,8 +42,7 @@ class GenerateScriptArguments:
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
-    batch_size: Optional[int] = field(default=4)
-    seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
+    generate_batch_size: Optional[int] = field(default=4)
 
     temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     top_p: Optional[float] = field(default=1.0, metadata={"help": "Gen temperature"})
@@ -64,10 +63,6 @@ class EvalScriptArguments:
 
 
 def generate(script_args):
-    tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    tokenizer.padding_side = "left"
-
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
     prompts = dataset["query"]
 
@@ -84,7 +79,7 @@ def generate(script_args):
     gens = {}
     revisions = sorted([branch.name for branch in refs.branches])
     for revision in revisions:
-        if revision == "main":
+        if "main" not in script_args.model_revisions and revision == "main":
             continue
 
         if script_args.model_revisions and revision not in script_args.model_revisions:
@@ -119,12 +114,18 @@ def generate(script_args):
             revision=revision,
             tokenizer=script_args.tokenizer_name,
             dtype=script_args.gen_dtype,
-            max_model_len=script_args.seq_length,
             tensor_parallel_size=script_args.num_gpus,
             trust_remote_code=True,
+            # max_num_seqs=script_args.generate_batch_size,
         )
 
-        llm.set_tokenizer(tokenizer)
+        if script_args.tokenizer_name is not None:
+            tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
+            if not tokenizer.pad_token:
+                tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            tokenizer.padding_side = "left"
+
+            llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 
@@ -188,7 +189,8 @@ def evaluate(args, reference, generations, model_name=None):
 
     torch_dtype = args.eval_dtype if args.eval_dtype in ["auto", None] else getattr(torch, args.eval_dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.gold_tokenizer_name)
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if not tokenizer.pad_token:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
     if args.gold_model_name.startswith("vwxyzjn"):
         # ScalarModel
@@ -305,6 +307,10 @@ def main_args_dict(args_dict):
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
+    import pdb
+
+    pdb.set_trace()
+
     print("EVALUATING")
     evaluate(eval_args, reference, generations, generate_args.model_name)
 
