@@ -3,12 +3,14 @@ from dataclasses import dataclass, field
 import torch
 from accelerate import PartialState
 from callbacks import PerplexityCallback
-from datasets import load_dataset
+from datasets import load_dataset, builder
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
 from trl import DPOTrainer, ModelConfig
 from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantization_config
+
+builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
 
 
 @dataclass

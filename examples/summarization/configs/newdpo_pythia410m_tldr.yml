@@ -3,9 +3,7 @@ task_type: "tldr"
 model_name: "mnoukhov/pythia410m-sft-tldr"
 # output name
 hub_model_id: "mnoukhov/pythia410m-dpo-tldr"
-# hub_strategy: all_checkpoints
 dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
-# dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
 dataset_eval_split: "validation"
 ## dpo
 learning_rate: 3e-5
