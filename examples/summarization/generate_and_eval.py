@@ -3,8 +3,9 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import numpy as np
 import torch
-from datasets import Dataset, builder, load_dataset
+from datasets import builder, load_dataset
 from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
 from scalar_rm_model import ScalarModel, ScalarModelConfig
@@ -13,8 +14,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     HfArgumentParser,
-    Trainer,
-    TrainingArguments,
+    pipeline,
 )
 from vllm import LLM, SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
@@ -48,6 +48,7 @@ class GenerateScriptArguments:
     top_p: Optional[float] = field(default=1.0, metadata={"help": "Gen temperature"})
     max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
     gen_dtype: Optional[str] = field(default="auto")
+    sanity_check: Optional[bool] = field(default=False)
 
 
 @dataclass
@@ -57,13 +58,15 @@ class EvalScriptArguments:
     gold_model_revision: Optional[str] = field(default=None)
     eval_dtype: Optional[str] = field(default="auto")
     eval_batch_size: Optional[int] = field(default=16)
-    max_length: Optional[int] = field(default=512)
     gold_tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     flash_attention: Optional[bool] = field(default=False)
 
 
 def generate(script_args):
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
+    if script_args.sanity_check:
+        dataset = dataset.select(range(100))
+
     prompts = dataset["query"]
 
     sampling_params = SamplingParams(
@@ -215,62 +218,33 @@ def evaluate(args, reference, generations, model_name=None):
             config=scalar_model_config,
             torch_dtype=torch_dtype,
             use_flash_attention_2=args.flash_attention,
+            device_map="auto",
         )
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
             args.gold_model_name,
             revision=args.gold_model_revision,
             torch_dtype=torch_dtype,
+            device_map="auto",
         )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    training_args = TrainingArguments(per_device_eval_batch_size=int(args.eval_batch_size), output_dir=".")
-
-    trainer = Trainer(
+    reward_pipeline = pipeline(
+        task="text-classification",
         model=model,
         tokenizer=tokenizer,
-        args=training_args,
+        device_map="auto",
+        function_to_apply="none",
     )
 
-    def tokenize_and_add_eos(tokenizer, text_column, max_length):
-        def fn(example):
-            text = example[text_column]
-            ends_with_eos = text.endswith(tokenizer.eos_token)
-            if not ends_with_eos:
-                text += tokenizer.eos_token
-
-            tokenized = tokenizer(
-                text,
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-            )
-
-            # guarantee that last token is EOS if truncated
-            token_length = sum(tokenized["attention_mask"])
-            if token_length == max_length:
-                tokenized["input_ids"][-1] = tokenizer.eos_token_id
-
-            return tokenized
-
-        return fn
-
-    ## get reference continuation rewards
-    dataset = Dataset.from_dict({"reference": reference})
-    dataset = dataset.map(tokenize_and_add_eos(tokenizer, "reference", args.max_length))
-
-    ref_results = trainer.predict(dataset)
-    ref_rewards = ref_results.predictions[0]
+    ref_outputs = reward_pipeline(reference)
+    ref_rewards = np.array([out["score"] for out in ref_outputs])
 
     step = 0
     for step_str, query_response in generations.items():
-        dataset = Dataset.from_dict({"query_response": query_response})
-        dataset = dataset.map(tokenize_and_add_eos(tokenizer, "query_response", args.max_length))
-
-        print(f"Evaluating {step_str}")
-        results = trainer.predict(dataset)
-        gen_rewards = results.predictions[0]
+        gen_outputs = reward_pipeline(query_response)
+        gen_rewards = np.array([out["score"] for out in gen_outputs])
 
         win_rate = (gen_rewards > ref_rewards).mean().item()
         norm_reward = (gen_rewards - ref_rewards).mean().item()
@@ -296,31 +270,31 @@ def evaluate(args, reference, generations, model_name=None):
         print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
 
 
-def main_args_dict(args_dict):
-    parser = HfArgumentParser([GenerateScriptArguments, EvalScriptArguments])
-    generate_args, eval_args = parser.parse_dict(args_dict)
+def main(generate_args, eval_args):
     if eval_args.gold_tokenizer_name is None:
         eval_args.gold_tokenizer_name = generate_args.tokenizer_name
 
+    if generate_args.sanity_check:
+        eval_args.wandb_log_id = None
+
     print("GENERATING")
     reference, generations = generate(generate_args)
+    #
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
+    # dataset = dataset.select(range(100))
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
     print("EVALUATING")
     evaluate(eval_args, reference, generations, generate_args.model_name)
 
 
+def main_args_dict(args_dict):
+    parser = HfArgumentParser([GenerateScriptArguments, EvalScriptArguments])
+    generate_args, eval_args = parser.parse_dict(args_dict)
+    main(generate_args, eval_args)
+
+
 if __name__ == "__main__":
     parser = HfArgumentParser([GenerateScriptArguments, EvalScriptArguments])
     generate_args, eval_args = parser.parse_args_into_dataclasses()
-    if eval_args.gold_tokenizer_name is None:
-        eval_args.gold_tokenizer_name = generate_args.tokenizer_name
-
-    print("GENERATING")
-    reference, generations = generate(generate_args)
-    # dataset = load_dataset(generate_args.dataset_name, split=generate_args.train_split)
-    # generations = {"step0": dataset["query_reference_response"]}
-    # reference = dataset["query_reference_response"]
-    print("EVALUATING")
-    evaluate(eval_args, reference, generations)
+    main(generate_args, eval_args)
