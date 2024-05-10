@@ -307,10 +307,6 @@ def main_args_dict(args_dict):
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
-    import pdb
-
-    pdb.set_trace()
-
     print("EVALUATING")
     evaluate(eval_args, reference, generations, generate_args.model_name)
 
