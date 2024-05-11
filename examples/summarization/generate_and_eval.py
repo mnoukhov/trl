@@ -140,7 +140,7 @@ def generate(script_args):
 
         # delete old model
         destroy_model_parallel()
-        del llm.llm_engine.driver_worker
+        del llm.llm_engine.model_executor.driver_worker
         del llm
         gc.collect()
         torch.cuda.empty_cache()
