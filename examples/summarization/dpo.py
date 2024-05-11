@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 from accelerate import PartialState
 from callbacks import PerplexityCallback
-from datasets import load_dataset
+from datasets import builder, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
@@ -11,8 +11,12 @@ from trl import DPOTrainer, ModelConfig
 from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantization_config
 
 
+builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
+
+
 @dataclass
 class DPOScriptArguments:
+    task_type: str = field(default="hh")
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
@@ -64,14 +68,10 @@ if __name__ == "__main__":
         quantization_config=quantization_config,
     )
     model = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
-    peft_config = get_peft_config(model_config)
-    if peft_config is None:
-        model_ref = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
-    else:
-        model_ref = None
 
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     if tokenizer.pad_token_id is None:
+        assert args.task_type != "tldr"
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     if args.ignore_bias_buffers:
@@ -90,13 +90,17 @@ if __name__ == "__main__":
     if args.sanity_check:
         train_dataset = train_dataset.select(range(50))
         eval_dataset = eval_dataset.select(range(50))
+        training_args.hub_model_id = None
+
+    if args.task_type == "tldr":
+        train_dataset = train_dataset.rename_column("query", "prompt")
+        eval_dataset = eval_dataset.rename_column("query", "prompt")
 
     ################
     # Training
     ################
     trainer = DPOTrainer(
         model,
-        model_ref,
         args=training_args,
         tokenizer=tokenizer,
         beta=args.beta,
@@ -126,9 +130,8 @@ if __name__ == "__main__":
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
 
-    trainer.save_model(training_args.output_dir)
-
-    if PartialState().is_main_process:
-        # model = trainer.model.merge_and_unload()
+    if PartialState().is_main_process and training_args.hub_model_id:
+        if model_config.use_peft:
+            model = trainer.model.merge_and_unload()
         trainer.push_to_hub(training_args.hub_model_id)
         tokenizer.push_to_hub(training_args.hub_model_id)

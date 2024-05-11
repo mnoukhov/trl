@@ -22,8 +22,7 @@ from transformers import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutputWithPast
 
-
-# from trl import ModelConfig, RewardConfig
+from trl import RewardConfig
 
 
 builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
@@ -34,7 +33,8 @@ tqdm.pandas()
 @dataclass
 class ScriptArguments:
     dataset_name: Optional[str] = field(default=None)
-    dataset_split: Optional[str] = field(default=None)
+    dataset_prompt_field: Optional[str] = field(default="prompt")
+    sanity_check: Optional[bool] = field(default=False)
     wandb_log_id: Optional[str] = field(default=None)
     model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     model_revision: Optional[str] = field(default=None)
@@ -168,7 +168,9 @@ def prepare_dataset(args, dataset, tokenizer):
             "input_ids_rejected": [],
             "attention_mask_rejected": [],
         }
-        for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        for prompt, chosen, rejected in zip(
+            examples[args.dataset_prompt_field], examples["chosen"], examples["rejected"]
+        ):
             full_chosen = prompt + chosen
             if not full_chosen.endswith(tokenizer.eos_token):
                 full_chosen += tokenizer.eos_token
@@ -245,12 +247,9 @@ if __name__ == "__main__":
     model.config.pad_token_id = tokenizer.pad_token_id
 
     ## get reference continuation rewards
-    dataset = load_dataset(args.dataset_name, split=args.dataset_split)
-    dataset = prepare_dataset(args, dataset, tokenizer)
+    data_collator = GPTRewardDataCollatorWithPadding(tokenizer, max_length=args.max_length, pad_to_multiple_of=8)
 
-    data_collator = GPTRewardDataCollatorWithPadding(tokenizer, max_length=args.max_length)
-
-    training_args = TrainingArguments(per_device_eval_batch_size=int(args.eval_batch_size), output_dir=".")
+    training_args = RewardConfig(per_device_eval_batch_size=int(args.eval_batch_size), output_dir=".")
 
     trainer = GPTRewardTrainer(
         model=model,
@@ -260,9 +259,12 @@ if __name__ == "__main__":
         data_collator=data_collator,
     )
 
-    outputs = trainer.predict(dataset)
-    preds = outputs.predictions
+    dataset = load_dataset(args.dataset_name)
+    for split, dataset_split in dataset.items():
+        if args.sanity_check:
+            dataset_split = dataset_split.select(range(16))
 
-    import pdb
+        dataset_split = prepare_dataset(args, dataset_split, tokenizer)
 
-    pdb.set_trace()
+        outputs = trainer.predict(dataset_split)
+        preds = outputs.predictions

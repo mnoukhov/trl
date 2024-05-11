@@ -1,0 +1,26 @@
+output_dir: /home/toolkit/trl_results/rm_pythia6.9b_tldr
+model_name_or_path: vwxyzjn/EleutherAI_pythia-6.9b-deduped__sft__tldr
+model_revision: sft__55513__1708611267
+tokenizer_name: EleutherAI/pythia-6.9b-deduped
+dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
+dataset_eval_split: validation
+##
+push_to_hub: True
+hub_model_id: mnoukhov/EleutherAI_pythia-6.9b-deduped__rm__tldr__55513__repro
+##
+use_peft: True
+lora_r: 16
+lora_alpha: 32
+lora_task_type: SEQ_CLS
+learning_rate: 3e-5
+# learning_rate: 3e-6
+##
+bf16: True
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 32
+gradient_checkpointing: False
+lr_scheduler_type: cosine
+num_train_epochs: 1
+max_length: 638  
+ddp_find_unused_parameters: False

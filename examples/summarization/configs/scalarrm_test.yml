@@ -1,7 +1,9 @@
-tokenizer_name: EleutherAI/pythia-1b-deduped
-model_name: vwxyzjn/EleutherAI_pythia-6.9b-deduped__reward__tldr 
+tokenizer_name: EleutherAI/pythia-6.9b-deduped
+# model_name: vwxyzjn/EleutherAI_pythia-6.9b-deduped__reward__tldr 
+dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
+dataset_prompt_field: query
+model_name: vwxyzjn/EleutherAI_pythia-1b-deduped__reward__tldr 
 model_revision: reward__55513__1708628552
 eval_dtype: bfloat16
 max_length: 640
-dataset_name: mnoukhov/summarize_from_feedback_tldr3_unlabelled_vllm_dpo_costa_2.8b_bf16.yml_6e799 
-dataset_split: train[:10]
+sanity_check: True

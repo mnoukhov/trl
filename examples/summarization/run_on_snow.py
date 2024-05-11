@@ -16,9 +16,9 @@ def run_exp(exp_dict, savedir, args):
     exp_name = exp_dict.pop("name")
     git_hash = exp_dict.pop("git")
     print(args)
-    print(f"savedir {savedir}")
+    print(f"code and output dir: {savedir}")
 
-    exp_dict["output_dir"] = savedir
+    exp_dict["output_dir"] = os.path.join(savedir, "output")
 
     os.environ["WANDB_RUN_ID"] = os.path.basename(savedir)
     os.environ["WANDB_NAME"] = exp_name
