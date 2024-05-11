@@ -1,0 +1,12 @@
+model_name: mnoukhov/pythia410m-dpo-tldr
+# model_revisions: ["main"]
+gen_dtype: bfloat16
+wandb_log_id: cfb3179a6dd00a0d09b55fc900877f5b
+dataset_name: vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144
+gold_model_name: cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr
+gold_tokenizer_name: EleutherAI/pythia-1b-deduped
+eval_dtype: bfloat16
+max_new_tokens: 128
+temperature: 0.010001
+generate_batch_size: 16
+eval_batch_size: 8
