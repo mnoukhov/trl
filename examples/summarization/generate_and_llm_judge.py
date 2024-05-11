@@ -11,7 +11,7 @@ from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
 from vllm import LLM, SamplingParams
-from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
+from vllm.distributed.parallel_state import destroy_model_parallel
 
 import wandb
 
@@ -151,7 +151,7 @@ def generate(script_args):
 
         # delete old model
         destroy_model_parallel()
-        del llm.llm_engine.driver_worker
+        del llm.llm_engine.model_executor.driver_worker
         del llm
         gc.collect()
         torch.cuda.empty_cache()
