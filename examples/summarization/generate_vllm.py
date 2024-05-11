@@ -117,6 +117,8 @@ def generate_vllm(script_args):
         max_tokens=script_args.max_new_tokens,
         top_p=script_args.top_p,
         n=script_args.sample_n,
+        include_stop_str_in_output=True,
+        skip_special_tokens=False,
     )
 
     generations = llm.generate(prompts, sampling_params)
@@ -277,5 +279,5 @@ def generate_relabel_args_dict(args_dict):
 if __name__ == "__main__":
     parser = HfArgumentParser(ScriptArguments)
     script_args = parser.parse_args_into_dataclasses()[0]
-
-    generate_vllm(script_args)
+    dataset = generate_vllm(script_args)
+    relabel(script_args, dataset)
