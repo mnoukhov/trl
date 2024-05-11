@@ -8,7 +8,7 @@ from datasets import Dataset, DatasetInfo, builder, load_dataset
 from peft import AutoPeftModelForCausalLM, PeftModelForCausalLM
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from vllm import LLM, SamplingParams
-from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
+from vllm.distributed.parallel_state import destroy_model_parallel
 
 from trl import DPOTrainer
 
@@ -30,7 +30,7 @@ class ScriptArguments:
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
     dataset_prompt_field: Optional[str] = field(default="query")
-    train_split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
+    split: Optional[str] = field(default="train[:20]", metadata={"help": "the dataset name"})
     batch_size: Optional[int] = field(default=4)
     max_prompt_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
@@ -48,18 +48,6 @@ class ScriptArguments:
 
 
 def prepare_vllm_model(script_args):
-    if script_args.tokenizer_name is not None:
-        tokenizer_name = script_args.tokenizer_name
-    else:
-        tokenizer_name = script_args.model_name
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-
-    if tokenizer_name.startswith("EleutherAI"):
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-
-    tokenizer.padding_side = "left"
-
     if script_args.lora_model:
         # peft model that needs to be merged
         if script_args.base_model_name is not None:
@@ -88,27 +76,18 @@ def prepare_vllm_model(script_args):
 
     llm = LLM(
         model=model_name,
+        tokenizer=script_args.tokenizer_name,
         revision=revision,
-        dtype=script_args.dtype,
-        tokenizer=tokenizer_name,
         tensor_parallel_size=script_args.num_gpus,
-        trust_remote_code=True,
     )
-    llm.set_tokenizer(tokenizer)
 
-    return llm, tokenizer
-
-
-def strip_prompt(examples):
-    examples["prompt"] = [prompt.strip() for prompt in examples["prompt"]]
-
-    return examples
+    return llm, llm.get_tokenizer()
 
 
 def generate_vllm(script_args):
     llm, _ = prepare_vllm_model(script_args)
 
-    dataset = load_dataset(script_args.dataset_name, split=script_args.train_split)
+    dataset = load_dataset(script_args.dataset_name, split=script_args.split)
 
     prompts = dataset[script_args.dataset_prompt_field]
 
@@ -141,13 +120,13 @@ def generate_vllm(script_args):
                 yield row
 
     ds_info = DatasetInfo(
-        f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
+        f"{script_args.dataset_name} split {script_args.split} prompts used to generate with {script_args.model_name}"
         f" temp {script_args.temperature} top_p {script_args.top_p} "
     )
     generated_dataset = Dataset.from_generator(dataset_generator, info=ds_info)
 
     destroy_model_parallel()
-    del llm.llm_engine.driver_worker
+    del llm.llm_engine.model_executor.driver_worker
     del llm
     gc.collect()
     torch.cuda.empty_cache()
@@ -171,6 +150,7 @@ def relabel(script_args, dataset):
             revision=script_args.revision,
             torch_dtype=torch_dtype,
         )
+        ref_model = None
     elif script_args.lora_model:
         model = AutoPeftModelForCausalLM.from_pretrained(
             script_args.model_name,
@@ -198,7 +178,7 @@ def relabel(script_args, dataset):
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
-    if tokenizer_name.startswith("EleutherAI"):
+    if tokenizer.pad_token is None and tokenizer_name.startswith("EleutherAI"):
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
     training_args = TrainingArguments(per_device_eval_batch_size=int(script_args.batch_size), output_dir=".")

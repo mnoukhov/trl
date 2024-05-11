@@ -1,8 +1,11 @@
 output_dir: summarize_from_feedback_tldr3_unlabelled_vllm_pythia410m-dpo-tldr
 dataset_name: mnoukhov/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144_unlabelled
-model_name: pythia410m-dpo-tldr
 lora_model: True
-train_split: train[:20000]
+model_name: mnoukhov/pythia410m-dpo-tldr
+tokenizer_name: mnoukhov/pythia410m-sft-tldr
+revision: step1164 
+base_model_name: mnoukhov/pythia410m-sft-tldr
+split: train[:20000]
 batch_size: 4
 max_prompt_length: 512
 max_new_tokens: 128

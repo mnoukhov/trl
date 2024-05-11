@@ -17,7 +17,7 @@ from transformers import (
     pipeline,
 )
 from vllm import LLM, SamplingParams
-from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
+from vllm.distributed.parallel_state import destroy_model_parallel
 
 import wandb
 

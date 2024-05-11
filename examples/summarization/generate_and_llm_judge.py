@@ -11,7 +11,7 @@ from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
 from vllm import LLM, SamplingParams
-from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
+from vllm.distributed.parallel_state import destroy_model_parallel
 
 import wandb
 
