@@ -18,7 +18,7 @@ builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
 
 @dataclass
 class ScriptArguments:
-    output_dir: Optional[str] = field(
+    output_name: Optional[str] = field(
         default="compare_results",
         metadata={"help": "output folder"},
     )
