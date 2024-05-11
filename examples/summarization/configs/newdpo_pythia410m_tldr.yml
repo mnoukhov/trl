@@ -1,12 +1,8 @@
 task_type: "tldr"
-## model and dataset
 model_name: "mnoukhov/pythia410m-sft-tldr"
-# output name
-hub_model_id: "mnoukhov/pythia410m-dpo-tldr-lr1e-5"
 dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
-dataset_eval_split: "validation"
-## dpo
-learning_rate: 1e-5
+dataset_eval_split: validation
+learning_rate: 3e-5
 lr_scheduler_type: cosine
 bf16: True
 gradient_accumulation_steps: 4
@@ -25,5 +21,9 @@ gradient_checkpointing: False
 ## save strategy
 evaluation_strategy: "steps"
 eval_steps: 0.2
+save_strategy: steps
+save_steps: 0.2
+hub_strategy: all_checkpoints
 logging_steps: 100
 ddp_find_unused_parameters: False
+hub_model_id: "mnoukhov/pythia410m-test-tldr"

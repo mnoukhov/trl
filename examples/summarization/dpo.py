@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 
 import torch
@@ -88,9 +89,10 @@ if __name__ == "__main__":
     eval_dataset = load_dataset(eval_dataset_name, split=args.dataset_eval_split)
 
     if args.sanity_check:
-        train_dataset = train_dataset.select(range(50))
-        eval_dataset = eval_dataset.select(range(50))
-        training_args.hub_model_id = None
+        train_dataset = train_dataset.select(range(128))
+        eval_dataset = eval_dataset.select(range(128))
+        training_args.push_to_hub = False
+        # training_args.hub_model_id = None
 
     if args.task_type == "tldr":
         train_dataset = train_dataset.rename_column("query", "prompt")
@@ -122,7 +124,6 @@ if __name__ == "__main__":
         max_prompt_length=args.max_prompt_length,
         prompt_field="prompt",
         target_field="chosen",
-        hub_model_id=training_args.hub_model_id,
     )
 
     trainer.add_callback(callback)
@@ -130,8 +131,12 @@ if __name__ == "__main__":
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
 
-    if PartialState().is_main_process and training_args.hub_model_id:
-        if model_config.use_peft:
-            model = trainer.model.merge_and_unload()
+    if PartialState().is_main_process and training_args.push_to_hub:
         trainer.push_to_hub(training_args.hub_model_id)
         tokenizer.push_to_hub(training_args.hub_model_id)
+
+    if model_config.use_peft:
+        merged_path = os.path.join(training_args.output_dir, "_merged")
+        model = trainer.model.merge_and_unload()
+        model.save_pretrained(merged_path)
+        tokenizer.save_pretrained(merged_path)
