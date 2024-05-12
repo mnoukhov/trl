@@ -18,6 +18,7 @@ builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
 
 @dataclass
 class ScriptArguments:
+    output_dir: Optional[str] = field(default=None)
     output_name: Optional[str] = field(
         default="compare_results",
         metadata={"help": "output folder"},
@@ -246,7 +247,7 @@ def relabel(script_args, dataset):
 
         description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
         relabel_dataset._info.description = description
-        relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
+        relabel_dataset.push_to_hub(script_args.output_name, split="train")
 
 
 def generate_relabel_args_dict(args_dict):
