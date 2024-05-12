@@ -80,10 +80,10 @@ Preferred: <"A" or "B">
 
 def generate(script_args):
     tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    tokenizer.padding_side = "left"
+    # tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    # if tokenizer.pad_token is None:
+    #     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    # tokenizer.padding_side = "left"
 
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
     prompts = dataset["query"]
@@ -139,7 +139,7 @@ def generate(script_args):
             trust_remote_code=True,
         )
 
-        llm.set_tokenizer(tokenizer)
+        # llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 

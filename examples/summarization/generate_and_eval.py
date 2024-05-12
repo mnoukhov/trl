@@ -119,16 +119,7 @@ def generate(script_args):
             dtype=script_args.gen_dtype,
             tensor_parallel_size=script_args.num_gpus,
             trust_remote_code=True,
-            # max_num_seqs=script_args.generate_batch_size,
         )
-
-        if script_args.tokenizer_name is not None:
-            tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-            if not tokenizer.pad_token:
-                tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer.padding_side = "left"
-
-            llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 
