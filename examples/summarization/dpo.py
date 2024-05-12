@@ -3,7 +3,8 @@ from dataclasses import dataclass, field
 
 import torch
 from accelerate import PartialState
-from callbacks import PerplexityCallback
+
+# from callbacks import PerplexityCallback
 from datasets import builder, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
@@ -95,7 +96,8 @@ if __name__ == "__main__":
         # training_args.hub_model_id = None
 
     if args.task_type == "tldr":
-        train_dataset = train_dataset.rename_column("query", "prompt")
+        if "query" in train_dataset.column_names:
+            train_dataset = train_dataset.rename_column("query", "prompt")
         eval_dataset = eval_dataset.rename_column("query", "prompt")
 
     ################
@@ -115,18 +117,18 @@ if __name__ == "__main__":
         peft_config=get_peft_config(model_config),
     )
 
-    callback = PerplexityCallback(
-        args=training_args,
-        dataset=eval_dataset,
-        tokenizer=tokenizer,
-        accelerator=trainer.accelerator,
-        max_length=args.max_length,
-        max_prompt_length=args.max_prompt_length,
-        prompt_field="prompt",
-        target_field="chosen",
-    )
-
-    trainer.add_callback(callback)
+    # callback = PerplexityCallback(
+    #     args=training_args,
+    #     dataset=eval_dataset,
+    #     tokenizer=tokenizer,
+    #     accelerator=trainer.accelerator,
+    #     max_length=args.max_length,
+    #     max_prompt_length=args.max_prompt_length,
+    #     prompt_field="prompt",
+    #     target_field="chosen",
+    # )
+    #
+    # trainer.add_callback(callback)
 
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
