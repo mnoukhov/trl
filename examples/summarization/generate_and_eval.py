@@ -143,8 +143,9 @@ def generate(script_args):
 
     print(f"generated {len(gens)} steps")
     reference = dataset["query_reference_response"]
+    prompts = dataset["query"]
 
-    return reference, gens
+    return prompts, reference, gens
 
     # ds_info = DatasetInfo(
     #     f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
@@ -154,7 +155,7 @@ def generate(script_args):
     # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
 
-def evaluate(args, reference, generations, model_name=None):
+def evaluate(args, prompts, reference, generations, model_name=None):
     if args.wandb_log_id is not None:
         # don't overwrite the wandb name of the original run
         if args.wandb_log_id == "model_name":
@@ -244,10 +245,21 @@ def evaluate(args, reference, generations, model_name=None):
             step = step + 1
 
         if log_to_wandb:
+            num_samples = 32
+            sample_generations = wandb.Table(
+                columns=["Prompt", "Policy", "Reference"],
+                rows=[
+                    [prompt, pol[len(prompt) :], ref[len(prompt) :]]
+                    for prompt, pol, ref in zip(
+                        prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
+                    )
+                ],
+            )
             wandb.log(
                 {
                     "gold/win_rate": win_rate,
                     "gold/norm_reward": norm_reward,
+                    "gold/samples": sample_generations,
                     "train/global_step": step,
                 },
                 step=step,
@@ -264,14 +276,14 @@ def main(generate_args, eval_args):
         eval_args.wandb_log_id = None
 
     print("GENERATING")
-    reference, generations = generate(generate_args)
+    prompts, reference, generations = generate(generate_args)
     #
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
     # dataset = dataset.select(range(100))
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
     print("EVALUATING")
-    evaluate(eval_args, reference, generations, generate_args.model_name_or_path)
+    evaluate(eval_args, prompts, reference, generations, generate_args.model_name_or_path)
 
 
 def main_args_dict(args_dict):
