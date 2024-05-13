@@ -1,7 +1,11 @@
-model_name: mnoukhov/pythia-2.8b-sft_hh_rlhf
-model_revisions: ["main"]
-# base_model_name: mnoukhov/EleutherAI_pythia-2.8b-deduped__sft__tldr_55513
-# wandb_log_id: model_name
+# model_name: mnoukhov/pythia-2.8b-sft_hh_rlhf
+# model_revisions: ["main"]
+# wandb_log_id: a0dcd8756e83f225beaf8ec65b56c402
+model_name: mnoukhov/pythia-2.8b-dpo_hh_rlhf
+model_revisions: ["step503", "step1006", "step1509", "step2012"]
+base_model_name: mnoukhov/pythia-2.8b-sft_hh_rlhf
+tokenizer_name: mnoukhov/pythia-2.8b-sft_hh_rlhf
+wandb_log_id: 8bd40413a5480b4b51828b829e00dc4e 
 # gen_dtype: bfloat16
 template: hh
 dataset_name: sophiex/hh-rlhf
@@ -11,4 +15,3 @@ llm_judge_model_name: meta-llama/Meta-Llama-3-8B-Instruct
 # llm_judge_dtype: bfloat16
 max_new_tokens: 128
 temperature: 0.010001
-sanity_check: True
