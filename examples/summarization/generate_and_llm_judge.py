@@ -35,7 +35,14 @@ class GenerateScriptArguments:
     dataset_name: Optional[str] = field(
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
+    dataset_prompt_field: str = field(
+        default="prompt", metadata={"help": "name of the prompt field in the dataset, e.g. \'query\' in summarization"}
+    )
+    dataset_chosen_field: str = field(
+        default="chosen", metadata={"help": "name of the chosen field in the dataset, e.g. \'reference_response\' in summarization"}
+    )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
+    template: Optional[str] = field(default="dialogue", metadata={"help": "the template, e.g. summarization"})
     batch_size: Optional[int] = field(default=4)
     seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
@@ -77,6 +84,16 @@ Comparison: <one-sentence comparison and explanation>
 Preferred: <"A" or "B">
 """
 
+TEMPLATE_DIALOGUE = """For the following query to a chatbot, which response is more helpful?
+Query: <the user query>
+Response A:
+<either the test method or baseline>
+Response B:
+<the other response>
+FIRST provide a one-sentence comparison of the two responses and explain which you feel is more helpful. SECOND, on a new line, state only "A" or "B" to indicate which response is more helpful. Your response should use the format:
+Comparison: <one-sentence comparison and explanation>
+More helpful: <"A" or "B">"""
+
 
 def generate(script_args):
     tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
@@ -85,8 +102,8 @@ def generate(script_args):
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.padding_side = "left"
 
-    dataset = load_dataset(script_args.dataset_name, split=script_args.split)
-    prompts = dataset["query"]
+    dataset = load_dataset(script_args.dataset_name, split=script_args.split).select(range(10))
+    prompts = dataset[script_args.dataset_prompt_field]
 
     sampling_params = SamplingParams(
         temperature=script_args.temperature,
@@ -156,6 +173,8 @@ def generate(script_args):
         gc.collect()
         torch.cuda.empty_cache()
         torch.distributed.destroy_process_group()
+        import ray
+        ray.shutdown()
 
     if script_args.output_dir is not None:
         # TODO add hash to dataset path
@@ -173,7 +192,7 @@ def generate(script_args):
 
     print(f"generated {len(gens)} steps")
     reference = []
-    for ref_response in dataset["reference_response"]:
+    for ref_response in dataset[script_args.dataset_chosen_field]:
         if ref_response.endswith("<|endoftext|>"):
             ref_response = ref_response.split("<|endoftext|>")[0]
 
@@ -327,6 +346,9 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
 def main(generate_args, eval_args):
     eval_args.num_gpus = generate_args.num_gpus
     eval_args.output_dir = generate_args.output_dir
+
+    if generate_args.template == 'dialogue':
+        TEMPLATE=TEMPLATE_DIALOGUE
 
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)
