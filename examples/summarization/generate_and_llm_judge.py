@@ -1,6 +1,7 @@
 import gc
 import os
 import random
+from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -36,13 +37,14 @@ class GenerateScriptArguments:
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
     dataset_prompt_field: str = field(
-        default="prompt", metadata={"help": "name of the prompt field in the dataset, e.g. \'query\' in summarization"}
+        default="prompt", metadata={"help": "name of the prompt field in the dataset, e.g. 'query' in summarization"}
     )
     dataset_chosen_field: str = field(
-        default="chosen", metadata={"help": "name of the chosen field in the dataset, e.g. \'reference_response\' in summarization"}
+        default="chosen",
+        metadata={"help": "name of the chosen field in the dataset, e.g. 'reference_response' in summarization"},
     )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
-    template: Optional[str] = field(default="dialogue", metadata={"help": "the template, e.g. summarization"})
+    template: namedtuple("tldr", "hh") = field(default="tldr", metadata={"help": "the template, e.g. summarization"})
     batch_size: Optional[int] = field(default=4)
     seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
@@ -66,7 +68,7 @@ class LLMJudgeArguments:
 
 OPTIONS = ["A", "B"]
 
-TEMPLATE = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
+TLDR_TEMPLATE = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
 
 ### Post:
 {post}
@@ -84,7 +86,7 @@ Comparison: <one-sentence comparison and explanation>
 Preferred: <"A" or "B">
 """
 
-TEMPLATE_DIALOGUE = """For the following query to a chatbot, which response is more helpful?
+HH_TEMPLATE = """For the following query to a chatbot, which response is more helpful?
 Query: <the user query>
 Response A:
 <either the test method or baseline>
@@ -96,12 +98,6 @@ More helpful: <"A" or "B">"""
 
 
 def generate(script_args):
-    tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    tokenizer.padding_side = "left"
-
     dataset = load_dataset(script_args.dataset_name, split=script_args.split).select(range(10))
     prompts = dataset[script_args.dataset_prompt_field]
 
@@ -149,14 +145,12 @@ def generate(script_args):
         llm = LLM(
             model=model_name,
             revision=revision,
-            tokenizer=tokenizer_name,
+            tokenizer=script_args.tokenizer_name,
             dtype=script_args.gen_dtype,
             max_model_len=script_args.seq_length,
             tensor_parallel_size=script_args.num_gpus,
             trust_remote_code=True,
         )
-
-        llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 
@@ -174,6 +168,7 @@ def generate(script_args):
         torch.cuda.empty_cache()
         torch.distributed.destroy_process_group()
         import ray
+
         ray.shutdown()
 
     if script_args.output_dir is not None:
@@ -208,7 +203,7 @@ def generate(script_args):
     # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
 
-def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
+def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, template):
     llm_judge_prompts = []
     generated_indices = []
     random.seed(seed)
@@ -221,7 +216,7 @@ def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
             response0 = ref.strip()
             response1 = gen.strip()
 
-        query = TEMPLATE.format(post=prompt, response0=response0, response1=response1)
+        query = template.format(post=prompt, response0=response0, response1=response1)
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": query},
@@ -268,12 +263,24 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
         stop_token_ids=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")],
     )
 
+    if generate_args.template == "tldr":
+        llm_judge_template = TLDR_TEMPLATE
+    elif generate_args.template == "hh":
+        llm_judge_template = HH_TEMPLATE
+    else:
+        raise NotImplementedError("not a valid template")
+
     ## get reference continuation rewards
     step = 0
     for step_str, generated in generations.items():
         print(f"Evaluating {step_str}")
         llm_judge_prompts, generated_indices = create_llm_judge_prompts(
-            tokenizer, prompts, reference, generated, args.seed
+            tokenizer,
+            prompts,
+            reference,
+            generated,
+            args.seed,
+            llm_judge_template,
         )
         llm_judge_output = llm.generate(llm_judge_prompts, sampling_params)
         llm_judge_texts = [output.outputs[0].text for output in llm_judge_output]
@@ -346,9 +353,6 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
 def main(generate_args, eval_args):
     eval_args.num_gpus = generate_args.num_gpus
     eval_args.output_dir = generate_args.output_dir
-
-    if generate_args.template == 'dialogue':
-        TEMPLATE=TEMPLATE_DIALOGUE
 
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)
