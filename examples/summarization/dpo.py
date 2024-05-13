@@ -95,11 +95,6 @@ if __name__ == "__main__":
         training_args.push_to_hub = False
         # training_args.hub_model_id = None
 
-    if args.task_type == "tldr":
-        if "query" in train_dataset.column_names:
-            train_dataset = train_dataset.rename_column("query", "prompt")
-        eval_dataset = eval_dataset.rename_column("query", "prompt")
-
     ################
     # Training
     ################
