@@ -3,14 +3,14 @@ import os
 import random
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import pandas as pd
 import torch
 from datasets import builder, load_dataset
 from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
-from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
+from transformers import AutoModelForCausalLM, HfArgumentParser
 from vllm import LLM, SamplingParams
 from vllm.distributed.parallel_state import destroy_model_parallel
 
@@ -44,7 +44,6 @@ class GenerateScriptArguments:
         metadata={"help": "name of the chosen field in the dataset, e.g. 'reference_response' in summarization"},
     )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
-    template: namedtuple("tldr", "hh") = field(default="tldr", metadata={"help": "the template, e.g. summarization"})
     batch_size: Optional[int] = field(default=4)
     seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
@@ -52,6 +51,7 @@ class GenerateScriptArguments:
     top_p: Optional[float] = field(default=1.0, metadata={"help": "Gen temperature"})
     max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
     gen_dtype: Optional[str] = field(default="auto")
+    sanity_check: Optional[bool] = field(default=False)
 
 
 @dataclass
@@ -63,15 +63,18 @@ class LLMJudgeArguments:
     llm_judge_temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     llm_judge_top_p: Optional[float] = field(default=0.9, metadata={"help": "Gen temperature"})
     llm_judge_max_new_tokens: Optional[int] = field(default=None, metadata={"help": "max new tokens"})
+    template: Literal["tldr", "hh"] = field(default="tldr", metadata={"help": "the template, e.g. summarization"})
     seed: Optional[int] = field(default=0)
 
 
 OPTIONS = ["A", "B"]
 
-TLDR_TEMPLATE = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
+Template = namedtuple("Template", ["judge_prompt", "comparison_key", "output_key"])
+
+tldr_prompt = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
 
 ### Post:
-{post}
+{prompt}
 
 ### Summary A:
 {response0}
@@ -83,22 +86,32 @@ TLDR_TEMPLATE = """Which of the following summaries does a better job of summari
 FIRST provide a one-sentence comparison of the two summaries, explaining which \
 you prefer and why. SECOND, on a new line, state only "A" or "B" to indicate your choice. Your response should use the format:
 Comparison: <one-sentence comparison and explanation>
-Preferred: <"A" or "B">
-"""
+Preferred: <"A" or "B">"""
 
-HH_TEMPLATE = """For the following query to a chatbot, which response is more helpful?
-Query: <the user query>
+TLDR_TEMPLATE = Template(judge_prompt=tldr_prompt, comparison_key="Comparison:", output_key="Preferred:")
+
+hh_prompt = """For the following query to a chatbot, which response is more helpful?
+Query: {prompt}
+
 Response A:
-<either the test method or baseline>
+{response0}
+
 Response B:
-<the other response>
-FIRST provide a one-sentence comparison of the two responses and explain which you feel is more helpful. SECOND, on a new line, state only "A" or "B" to indicate which response is more helpful. Your response should use the format:
+{response1}
+
+FIRST provide a one-sentence comparison of the two responses and explain which you feel is more helpful. \
+SECOND, on a new line, state only "A" or "B" to indicate which response is more helpful. Your response should use the format:
 Comparison: <one-sentence comparison and explanation>
 More helpful: <"A" or "B">"""
 
+HH_TEMPLATE = Template(judge_prompt=hh_prompt, comparison_key="Comparison:", output_key="More helpful:")
+
 
 def generate(script_args):
-    dataset = load_dataset(script_args.dataset_name, split=script_args.split).select(range(10))
+    dataset = load_dataset(script_args.dataset_name, split=script_args.split)
+    if script_args.sanity_check:
+        dataset = dataset.select(range(100))
+
     prompts = dataset[script_args.dataset_prompt_field]
 
     sampling_params = SamplingParams(
@@ -112,7 +125,7 @@ def generate(script_args):
     gens = {}
     revisions = sorted([branch.name for branch in refs.branches])
     for revision in revisions:
-        if revision == "main":
+        if "main" not in script_args.model_revisions and revision == "main":
             continue
 
         if script_args.model_revisions and revision not in script_args.model_revisions:
@@ -167,9 +180,6 @@ def generate(script_args):
         gc.collect()
         torch.cuda.empty_cache()
         torch.distributed.destroy_process_group()
-        import ray
-
-        ray.shutdown()
 
     if script_args.output_dir is not None:
         # TODO add hash to dataset path
@@ -195,15 +205,8 @@ def generate(script_args):
 
     return prompts, reference, gens
 
-    # ds_info = DatasetInfo(
-    #     f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
-    #     f" temp {script_args.temperature} top_p {script_args.top_p} "
-    # )
-    # generated_dataset = Dataset.from_generator(dataset_generator, info=ds_info)
-    # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
-
-def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, template):
+def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, prompt_template):
     llm_judge_prompts = []
     generated_indices = []
     random.seed(seed)
@@ -216,7 +219,7 @@ def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, tem
             response0 = ref.strip()
             response1 = gen.strip()
 
-        query = template.format(post=prompt, response0=response0, response1=response1)
+        query = prompt_template.format(prompt=prompt, response0=response0, response1=response1)
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": query},
@@ -263,9 +266,9 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
         stop_token_ids=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")],
     )
 
-    if generate_args.template == "tldr":
+    if args.template == "tldr":
         llm_judge_template = TLDR_TEMPLATE
-    elif generate_args.template == "hh":
+    elif args.template == "hh":
         llm_judge_template = HH_TEMPLATE
     else:
         raise NotImplementedError("not a valid template")
@@ -280,20 +283,24 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
             reference,
             generated,
             args.seed,
-            llm_judge_template,
+            llm_judge_template.judge_prompt,
         )
         llm_judge_output = llm.generate(llm_judge_prompts, sampling_params)
         llm_judge_texts = [output.outputs[0].text for output in llm_judge_output]
 
         comparisons, preferred = [], []
         for llm_judge_completion in llm_judge_texts:
-            if "Comparison:" in llm_judge_completion:
-                comparisons.append(llm_judge_completion.split("Comparison:")[1].split("Preferred:")[0].strip())
+            if llm_judge_template.comparison_key in llm_judge_completion:
+                comparisons.append(
+                    llm_judge_completion.split(llm_judge_template.comparison_key)[1]
+                    .split(llm_judge_template.output_key)[0]
+                    .strip()
+                )
             else:
                 comparisons.append("")
 
-            if "Preferred:" in llm_judge_completion:
-                preferred.append(llm_judge_completion.split("Preferred:")[1].strip())
+            if llm_judge_template.output_key in llm_judge_completion:
+                preferred.append(llm_judge_completion.split(llm_judge_template.output_key)[1].strip())
             else:
                 preferred.append("X")
 
@@ -353,6 +360,9 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
 def main(generate_args, eval_args):
     eval_args.num_gpus = generate_args.num_gpus
     eval_args.output_dir = generate_args.output_dir
+
+    if generate_args.sanity_check:
+        eval_args.wandb_log_id = None
 
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)
