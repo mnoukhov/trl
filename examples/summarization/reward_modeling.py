@@ -81,9 +81,9 @@ def tldr_preprocess_function(examples):
         "input_ids_rejected": [],
         "attention_mask_rejected": [],
     }
-    for query, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
-        tokenized_chosen = tokenizer(query + chosen)
-        tokenized_rejected = tokenizer(query + rejected)
+    for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        tokenized_chosen = tokenizer(prompt + chosen)
+        tokenized_rejected = tokenizer(prompt + rejected)
 
         new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
         new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
@@ -95,20 +95,20 @@ def tldr_preprocess_function(examples):
 
 def tldr_relabel_dataset_fn(batch: Dict[str, List]):
     relabel_batch = {
-        "query": [],
+        "prompt": [],
         "chosen": [],
         "rejected": [],
         "pred_chosen": [],
         "pred_rejected": [],
     }
-    for query, chosen, rejected, pred_chosen, pred_rejected in zip(
-        batch["query"],
+    for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(
+        batch["prompt"],
         batch["chosen"],
         batch["rejected"],
         batch["pred_chosen"],
         batch["pred_rejected"],
     ):
-        relabel_batch["query"].append(query)
+        relabel_batch["prompt"].append(prompt)
         if pred_chosen >= pred_rejected:
             relabel_batch["chosen"].append(chosen)
             relabel_batch["rejected"].append(rejected)
