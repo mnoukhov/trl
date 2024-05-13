@@ -5,7 +5,7 @@ model_name: mnoukhov/pythia410m-dpo-tldr
 revision: step873
 tokenizer_name: mnoukhov/pythia410m-sft-tldr
 base_model_name: mnoukhov/pythia410m-sft-tldr
-split: train[:20000]
+split: train
 batch_size: 4
 max_prompt_length: 512
 max_new_tokens: 128
