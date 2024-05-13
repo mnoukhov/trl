@@ -124,6 +124,11 @@ def tldr_relabel_dataset_fn(batch: Dict[str, List]):
 
 
 def tldr_relabel_dataset(dataset, pred_chosen, pred_rejected):
+    if "pred_chosen" in dataset.column_names:
+        dataset = dataset.remove_columns(["pred_chosen"])
+    if "pred_rejected" in dataset.column_names:
+        dataset = dataset.remove_columns(["pred_rejected"])
+
     dataset = dataset.add_column("pred_chosen", pred_chosen)
     dataset = dataset.add_column("pred_rejected", pred_rejected)
     dataset = dataset.map(tldr_relabel_dataset_fn, batched=True, remove_columns=dataset.column_names)
@@ -187,7 +192,7 @@ if __name__ == "__main__":
         and len(x["input_ids_rejected"]) <= reward_config.max_length
     )
     train_dataset = raw_datasets[script_args.dataset_train_split]
-    eval_dataset = raw_datasets[script_args.dataset_eval_split]
+    eval_dataset = raw_datasets[script_args.dataset_eval_split] if script_args.dataset_eval_split else None
 
     ################
     # Training
@@ -215,10 +220,11 @@ if __name__ == "__main__":
             raw_datasets[script_args.dataset_train_split], preds[:, 0], preds[:, 1]
         )
 
-        preds = trainer.predict(eval_dataset).predictions
-        relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
-            raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
-        )
+        if script_args.dataset_eval_split:
+            preds = trainer.predict(eval_dataset).predictions
+            relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
+                raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
+            )
 
         if trainer.accelerator.is_local_main_process and not script_args.sanity_check:
             print("Pushing")
