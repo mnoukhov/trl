@@ -6,7 +6,6 @@ from typing import List, Optional
 import numpy as np
 import torch
 from datasets import builder, load_dataset
-from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
 from scalar_rm_model import ScalarModel, ScalarModelConfig
 from transformers import (
@@ -34,8 +33,8 @@ class GenerateScriptArguments:
     num_gpus: Optional[int] = field(default=1)
     base_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
     base_model_revision: Optional[str] = field(default=None)
-    model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
-    model_revisions: Optional[List[str]] = field(default_factory=list)
+    model_name_or_path: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
+    model_paths: Optional[List[str]] = field(default_factory=list)
     # base_model_revision: Optional[str] = field(default=None)
     tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     dataset_name: Optional[str] = field(
@@ -78,43 +77,32 @@ def generate(script_args):
         skip_special_tokens=False,
     )
 
-    refs = list_repo_refs(script_args.model_name, repo_type="model")
     gens = {}
-    revisions = sorted([branch.name for branch in refs.branches])
-    for revision in revisions:
-        if "main" not in script_args.model_revisions and revision == "main":
-            continue
+    checkpoint_subfolders = [
+        path
+        for path in os.listdir(script_args.model_name_or_path)
+        if path.startswith("checkpoint") and (not script_args.model_paths or path in script_args.model_paths)
+    ]
+    for checkpoint_name in checkpoint_subfolders:
+        print(f"generating step {checkpoint_name}")
 
-        if script_args.model_revisions and revision not in script_args.model_revisions:
-            continue
-
-        print(f"generating step {revision}")
-
-        if script_args.base_model_name is None:
-            # merged model
-            model_name = script_args.model_name
-            revision_name = revision
-        else:
+        model_name_or_path = os.path.join(script_args.model_name_or_path, checkpoint_name)
+        if script_args.base_model_name is not None:
             # peft model that needs to be merged
             base_model = AutoModelForCausalLM.from_pretrained(
                 script_args.base_model_name, revision=script_args.base_model_revision
             )
             # merge the model and save
-            model = PeftModelForCausalLM.from_pretrained(
-                base_model, script_args.model_name, revision=revision, device="cpu"
-            )
+            model = PeftModelForCausalLM.from_pretrained(base_model, model_name_or_path, device_map="cpu")
             merged = model.merge_and_unload()
-            model_save_path = f"/home/toolkit/trl_results/{script_args.model_name}_merged/{revision}"
+            model_save_path = os.path.join(model_name_or_path, "_merged")
             merged.save_pretrained(model_save_path)
             del model
             del merged
-            model_name = model_save_path
-            revision_name = revision
-            revision = None
+            model_name_or_path = model_save_path
 
         llm = LLM(
-            model=model_name,
-            revision=revision,
+            model=model_name_or_path,
             tokenizer=script_args.tokenizer_name,
             dtype=script_args.gen_dtype,
             tensor_parallel_size=script_args.num_gpus,
@@ -125,9 +113,9 @@ def generate(script_args):
 
         texts = [output.prompt + output.outputs[0].text for output in generations]
 
-        gens[revision_name] = texts
+        gens[checkpoint_name] = texts
 
-        dataset = dataset.add_column(f"generations_{revision_name}", texts)
+        dataset = dataset.add_column(f"generations_{checkpoint_name}", texts)
 
         # delete old model
         destroy_model_parallel()
@@ -141,10 +129,12 @@ def generate(script_args):
         # TODO add hash to dataset path
         # sampling_str = str(sampling_params)
         # sampling_hash = hashlib.sha256(sampling_str.encode()).hexdigest()[:10]
+
+        # TODO fix model name or path string
         dataset_path = os.path.join(
             script_args.output_dir,
             script_args.dataset_name.replace("/", "_"),
-            script_args.model_name.replace("/", "_"),
+            script_args.model_name_or_path.replace("/", "_"),
         )
         os.makedirs(dataset_path, exist_ok=True)
         dataset.save_to_disk(dataset_path)
@@ -170,6 +160,9 @@ def evaluate(args, reference, generations, model_name=None):
         if args.wandb_log_id == "model_name":
             # model name = config_wandblogid
             wandb_log_id = model_name.split("_")[-1]
+        elif args.wandb_log_id == "model_path":
+            # model path = /home/.../wandb_log_id/output
+            wandb_log_id = model_name.split("/")[-2]
         else:
             wandb_log_id = args.wandb_log_id
 
@@ -241,8 +234,8 @@ def evaluate(args, reference, generations, model_name=None):
         win_rate = (gen_rewards > ref_rewards).mean().item()
         norm_reward = (gen_rewards - ref_rewards).mean().item()
 
-        if step_str.startswith("step"):
-            step_str = step_str.removeprefix("step")
+        if step_str.startswith("checkpoint-"):
+            step_str = step_str.removeprefix("checkpoint-")
 
         if step_str.isdigit():
             step = int(step_str)
@@ -256,7 +249,8 @@ def evaluate(args, reference, generations, model_name=None):
                     "gold/win_rate": win_rate,
                     "gold/norm_reward": norm_reward,
                     "train/global_step": step,
-                }
+                },
+                step=step,
             )
 
         print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
@@ -277,7 +271,7 @@ def main(generate_args, eval_args):
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
     print("EVALUATING")
-    evaluate(eval_args, reference, generations, generate_args.model_name)
+    evaluate(eval_args, reference, generations, generate_args.model_name_or_path)
 
 
 def main_args_dict(args_dict):

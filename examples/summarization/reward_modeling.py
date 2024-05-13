@@ -81,9 +81,9 @@ def tldr_preprocess_function(examples):
         "input_ids_rejected": [],
         "attention_mask_rejected": [],
     }
-    for query_chosen, query_rejected in zip(examples["query_chosen"], examples["query_rejected"]):
-        tokenized_chosen = tokenizer(query_chosen)
-        tokenized_rejected = tokenizer(query_rejected)
+    for query, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        tokenized_chosen = tokenizer(query + chosen)
+        tokenized_rejected = tokenizer(query + rejected)
 
         new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
         new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
@@ -163,7 +163,7 @@ if __name__ == "__main__":
 
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
-        model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     ################
     # Dataset
