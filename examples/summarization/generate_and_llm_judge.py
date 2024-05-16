@@ -202,6 +202,9 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
         if args.wandb_log_id == "model_name":
             # model name = config_wandblogid
             wandb_log_id = model_name.split("_")[-1]
+        elif args.wandb_log_id == "model_path":
+            # model path = /home/.../wandb_log_id/output
+            wandb_log_id = model_name.split("/")[-2]
         else:
             wandb_log_id = args.wandb_log_id
 
