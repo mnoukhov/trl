@@ -7,9 +7,8 @@ from typing import List, Optional
 import pandas as pd
 import torch
 from datasets import builder, load_dataset
-from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
-from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
+from transformers import AutoModelForCausalLM, HfArgumentParser
 from vllm import LLM, SamplingParams
 from vllm.distributed.parallel_state import destroy_model_parallel
 
@@ -28,8 +27,9 @@ class GenerateScriptArguments:
     num_gpus: Optional[int] = field(default=1)
     base_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
     base_model_revision: Optional[str] = field(default=None)
-    model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
-    model_revisions: Optional[List[str]] = field(default_factory=list)
+    model_name_or_path: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
+    model_revision: Optional[str] = field(default=None, metadata={"help": "the model name"})
+    model_paths: Optional[List[str]] = field(default_factory=list)
     # base_model_revision: Optional[str] = field(default=None)
     tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     dataset_name: Optional[str] = field(
@@ -37,12 +37,12 @@ class GenerateScriptArguments:
     )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
     batch_size: Optional[int] = field(default=4)
-    seq_length: Optional[int] = field(default=512, metadata={"help": "Input sequence length"})
 
     temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     top_p: Optional[float] = field(default=1.0, metadata={"help": "Gen temperature"})
     max_new_tokens: Optional[int] = field(default=48, metadata={"help": "max new tokens"})
     gen_dtype: Optional[str] = field(default="auto")
+    sanity_check: Optional[bool] = field(default=False)
 
 
 @dataclass
@@ -79,13 +79,10 @@ Preferred: <"A" or "B">
 
 
 def generate(script_args):
-    tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
-    # tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    # if tokenizer.pad_token is None:
-    #     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    # tokenizer.padding_side = "left"
-
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
+    if script_args.sanity_check:
+        dataset = dataset.select(range(100))
+
     prompts = dataset["query"]
 
     sampling_params = SamplingParams(
@@ -95,59 +92,60 @@ def generate(script_args):
         n=1,
     )
 
-    refs = list_repo_refs(script_args.model_name, repo_type="model")
     gens = {}
-    revisions = sorted([branch.name for branch in refs.branches])
-    for revision in revisions:
-        if revision == "main":
-            continue
 
-        if script_args.model_revisions and revision not in script_args.model_revisions:
-            continue
+    model_paths = [script_args.model_name_or_path]
+    # path with possible checkpoint subfolders
+    if os.path.exists(script_args.model_name_or_path):
+        checkpoint_subfolders = [
+            path
+            for path in os.listdir(script_args.model_name_or_path)
+            if path.startswith("checkpoint") and (not script_args.model_paths or path in script_args.model_paths)
+        ]
 
-        print(f"generating step {revision}")
+        # if there are checkpoint subfolders, use those instead of model_path
+        if checkpoint_subfolders:
+            model_paths = [
+                os.path.join(script_args.model_name_or_path, subfolder) for subfolder in checkpoint_subfolders
+            ]
 
-        if script_args.base_model_name is None:
-            # merged model
-            model_name = script_args.model_name
-            revision_name = revision
-        else:
+    for model_name_or_path in model_paths:
+        # model_name_or_path = os.path.join(script_args.model_name_or_path, checkpoint_name)
+
+        print(f"generating {model_name_or_path}")
+
+        if script_args.base_model_name is not None:
+            assert script_args.model_revision is None
             # peft model that needs to be merged
             base_model = AutoModelForCausalLM.from_pretrained(
                 script_args.base_model_name, revision=script_args.base_model_revision
             )
             # merge the model and save
-            model = PeftModelForCausalLM.from_pretrained(
-                base_model, script_args.model_name, revision=revision, device="cpu"
-            )
+            model = PeftModelForCausalLM.from_pretrained(base_model, model_name_or_path, device_map="cpu")
             merged = model.merge_and_unload()
-            model_save_path = f"/home/toolkit/trl_results/{script_args.model_name}_merged/{revision}"
+            model_save_path = os.path.join(model_name_or_path, "_merged")
             merged.save_pretrained(model_save_path)
             del model
             del merged
-            model_name = model_save_path
-            revision_name = revision
-            revision = None
+            model_name_or_path = model_save_path
 
         llm = LLM(
-            model=model_name,
-            revision=revision,
-            tokenizer=tokenizer_name,
+            model=model_name_or_path,
+            revision=script_args.model_revision,
+            tokenizer=script_args.tokenizer_name,
             dtype=script_args.gen_dtype,
-            max_model_len=script_args.seq_length,
             tensor_parallel_size=script_args.num_gpus,
             trust_remote_code=True,
         )
-
-        # llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 
         texts = [output.outputs[0].text for output in generations]
 
-        gens[revision_name] = texts
+        model_or_checkpoint_name = os.path.basename(model_name_or_path)
+        gens[model_or_checkpoint_name] = texts
 
-        dataset = dataset.add_column(f"generations_{revision_name}", texts)
+        dataset = dataset.add_column(f"generations_{model_or_checkpoint_name}", texts)
 
         # delete old model
         destroy_model_parallel()
@@ -157,19 +155,11 @@ def generate(script_args):
         torch.cuda.empty_cache()
         torch.distributed.destroy_process_group()
 
-    if script_args.output_dir is not None:
-        # TODO add hash to dataset path
-        # sampling_str = str(sampling_params)
-        # sampling_hash = hashlib.sha256(sampling_str.encode()).hexdigest()[:10]
-        dataset_path = os.path.join(
-            script_args.output_dir,
-            script_args.dataset_name.replace("/", "_"),
-            script_args.model_name.replace("/", "_"),
-        )
-        os.makedirs(dataset_path, exist_ok=True)
-        dataset.save_to_disk(dataset_path)
-        with open(f"{dataset_path}_sampling_params.txt", "w") as f:
-            print(sampling_params, file=f)
+    dataset_path = os.path.join(script_args.model_name_or_path, "_generations")
+    os.makedirs(dataset_path, exist_ok=True)
+    dataset.save_to_disk(os.path.join(dataset_path, "dataset"))
+    with open(os.path.join(dataset_path, "sampling_params.txt"), "w") as f:
+        print(sampling_params, file=f)
 
     print(f"generated {len(gens)} steps")
     reference = []
@@ -180,13 +170,6 @@ def generate(script_args):
         reference.append(ref_response.strip())
 
     return prompts, reference, gens
-
-    # ds_info = DatasetInfo(
-    #     f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
-    #     f" temp {script_args.temperature} top_p {script_args.top_p} "
-    # )
-    # generated_dataset = Dataset.from_generator(dataset_generator, info=ds_info)
-    # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
 
 def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
@@ -290,8 +273,8 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
         if num_fails > 0:
             print(f"Failed to get preference from {num_fails} examples out of {len(preferred)}")
 
-        if step_str.startswith("step"):
-            step_str = step_str.removeprefix("step")
+        if step_str.startswith("checkpoint-"):
+            step_str = step_str.removeprefix("checkpoint-")
 
         if step_str.isdigit():
             step = int(step_str)
@@ -328,6 +311,9 @@ def main(generate_args, eval_args):
     eval_args.num_gpus = generate_args.num_gpus
     eval_args.output_dir = generate_args.output_dir
 
+    if generate_args.sanity_check:
+        eval_args.wandb_log_id = None
+
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
@@ -336,7 +322,7 @@ def main(generate_args, eval_args):
     # reference = dataset["reference_response"]
     # generations = {"step0": dataset["reference_response"]}
     print("EVALUATING")
-    llm_as_a_judge(eval_args, prompts, reference, generations, generate_args.model_name)
+    llm_as_a_judge(eval_args, prompts, reference, generations, generate_args.model_name_or_path)
 
 
 def main_args_dict(args_dict):

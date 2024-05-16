@@ -78,15 +78,24 @@ def generate(script_args):
     )
 
     gens = {}
-    checkpoint_subfolders = [
-        path
-        for path in os.listdir(script_args.model_name_or_path)
-        if path.startswith("checkpoint") and (not script_args.model_paths or path in script_args.model_paths)
-    ]
-    for checkpoint_name in checkpoint_subfolders:
-        print(f"generating step {checkpoint_name}")
+    model_paths = [script_args.model_name_or_path]
+    # path with possible checkpoint subfolders
+    if os.path.exists(script_args.model_name_or_path):
+        checkpoint_subfolders = [
+            path
+            for path in os.listdir(script_args.model_name_or_path)
+            if path.startswith("checkpoint") and (not script_args.model_paths or path in script_args.model_paths)
+        ]
 
-        model_name_or_path = os.path.join(script_args.model_name_or_path, checkpoint_name)
+        # if there are checkpoint subfolders, use those instead of model_path
+        if checkpoint_subfolders:
+            model_paths = [
+                os.path.join(script_args.model_name_or_path, subfolder) for subfolder in checkpoint_subfolders
+            ]
+
+    for model_name_or_path in model_paths:
+        print(f"generating {model_name_or_path}")
+
         if script_args.base_model_name is not None:
             # peft model that needs to be merged
             base_model = AutoModelForCausalLM.from_pretrained(
@@ -113,9 +122,10 @@ def generate(script_args):
 
         texts = [output.prompt + output.outputs[0].text for output in generations]
 
-        gens[checkpoint_name] = texts
+        model_or_checkpoint_name = os.path.basename(model_name_or_path)
+        gens[model_or_checkpoint_name] = texts
 
-        dataset = dataset.add_column(f"generations_{checkpoint_name}", texts)
+        dataset = dataset.add_column(f"generations_{model_or_checkpoint_name}", texts)
 
         # delete old model
         destroy_model_parallel()
