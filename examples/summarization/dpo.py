@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 import torch
 from accelerate import PartialState
@@ -22,7 +23,7 @@ class DPOScriptArguments:
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
-    eval_dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
+    eval_dataset_name: Optional[str] = field(default=None, metadata={"help": "the dataset name"})
     beta: float = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
     max_length: int = field(default=512, metadata={"help": "max length of each sample"})
     max_prompt_length: int = field(default=128, metadata={"help": "max length of each sample's prompt"})
@@ -111,19 +112,6 @@ if __name__ == "__main__":
         generate_during_eval=args.generate_during_eval,
         peft_config=get_peft_config(model_config),
     )
-
-    # callback = PerplexityCallback(
-    #     args=training_args,
-    #     dataset=eval_dataset,
-    #     tokenizer=tokenizer,
-    #     accelerator=trainer.accelerator,
-    #     max_length=args.max_length,
-    #     max_prompt_length=args.max_prompt_length,
-    #     prompt_field="prompt",
-    #     target_field="chosen",
-    # )
-    #
-    # trainer.add_callback(callback)
 
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
