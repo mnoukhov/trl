@@ -186,7 +186,8 @@ def evaluate(args, prompts, reference, generations, model_name=None):
         log_to_wandb = False
 
     torch_dtype = args.eval_dtype if args.eval_dtype in ["auto", None] else getattr(torch, args.eval_dtype)
-    tokenizer = AutoTokenizer.from_pretrained(args.gold_tokenizer_name)
+    gold_tokenizer_name = args.gold_tokenizer_name if args.gold_tokenizer_name is not None else args.gold_model_name
+    tokenizer = AutoTokenizer.from_pretrained(gold_tokenizer_name)
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
@@ -281,9 +282,6 @@ def evaluate(args, prompts, reference, generations, model_name=None):
 
 
 def main(generate_args, eval_args):
-    if eval_args.gold_tokenizer_name is None:
-        eval_args.gold_tokenizer_name = generate_args.tokenizer_name
-
     if generate_args.sanity_check:
         eval_args.wandb_log_id = None
 
