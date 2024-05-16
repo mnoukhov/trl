@@ -95,6 +95,7 @@ def generate(script_args):
 
     for model_name_or_path in model_paths:
         print(f"generating {model_name_or_path}")
+        model_or_checkpoint_name = os.path.basename(model_name_or_path)
 
         if script_args.base_model_name is not None:
             # peft model that needs to be merged
@@ -122,7 +123,6 @@ def generate(script_args):
 
         texts = [output.prompt + output.outputs[0].text for output in generations]
 
-        model_or_checkpoint_name = os.path.basename(model_name_or_path)
         gens[model_or_checkpoint_name] = texts
 
         dataset = dataset.add_column(f"generations_{model_or_checkpoint_name}", texts)

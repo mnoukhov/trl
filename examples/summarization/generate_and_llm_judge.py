@@ -110,7 +110,7 @@ def generate(script_args):
             ]
 
     for model_name_or_path in model_paths:
-        # model_name_or_path = os.path.join(script_args.model_name_or_path, checkpoint_name)
+        model_or_checkpoint_name = os.path.basename(model_name_or_path)
 
         print(f"generating {model_name_or_path}")
 
@@ -142,7 +142,6 @@ def generate(script_args):
 
         texts = [output.outputs[0].text for output in generations]
 
-        model_or_checkpoint_name = os.path.basename(model_name_or_path)
         gens[model_or_checkpoint_name] = texts
 
         dataset = dataset.add_column(f"generations_{model_or_checkpoint_name}", texts)
