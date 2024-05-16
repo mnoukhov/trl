@@ -275,7 +275,6 @@ def evaluate(args, prompts, reference, generations, model_name=None):
                     "gold/samples": sample_generations,
                     "train/global_step": step,
                 },
-                step=step,
             )
 
         print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
