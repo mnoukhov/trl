@@ -234,6 +234,7 @@ def evaluate(args, prompts, reference, generations, model_name=None):
 
         win_rate = (gen_rewards > ref_rewards).mean().item()
         norm_reward = (gen_rewards - ref_rewards).mean().item()
+        mean_reward = gen_rewards.mean().item()
 
         if step_str.startswith("checkpoint-"):
             step_str = step_str.removeprefix("checkpoint-")
@@ -259,6 +260,7 @@ def evaluate(args, prompts, reference, generations, model_name=None):
                 {
                     "gold/win_rate": win_rate,
                     "gold/norm_reward": norm_reward,
+                    "gold/reward": mean_reward,
                     "gold/samples": sample_generations,
                     "train/global_step": step,
                 },
