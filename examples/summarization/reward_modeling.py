@@ -28,6 +28,7 @@ python examples/scripts/reward_modeling.py \
     --max_length=512 \
 """
 
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -212,6 +213,8 @@ if __name__ == "__main__":
     elif script_args.mode == "eval":
         results = trainer.evaluate()
         print(results)
+        with open(os.path.join(reward_config.output_dir, "eval.txt"), "w") as f:
+            print(results, file=f)
     elif script_args.mode == "relabel":
         relabel_dataset = DatasetDict()
 
