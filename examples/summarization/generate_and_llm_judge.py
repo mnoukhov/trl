@@ -1,8 +1,9 @@
 import gc
 import os
 import random
+from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import pandas as pd
 import torch
@@ -35,6 +36,13 @@ class GenerateScriptArguments:
     dataset_name: Optional[str] = field(
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
+    dataset_prompt_field: str = field(
+        default="prompt", metadata={"help": "name of the prompt field in the dataset, e.g. 'query' in summarization"}
+    )
+    dataset_chosen_field: str = field(
+        default="chosen",
+        metadata={"help": "name of the chosen field in the dataset, e.g. 'reference_response' in summarization"},
+    )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
     batch_size: Optional[int] = field(default=4)
 
@@ -54,15 +62,18 @@ class LLMJudgeArguments:
     llm_judge_temperature: Optional[float] = field(default=0.7, metadata={"help": "Gen temperature"})
     llm_judge_top_p: Optional[float] = field(default=0.9, metadata={"help": "Gen temperature"})
     llm_judge_max_new_tokens: Optional[int] = field(default=None, metadata={"help": "max new tokens"})
+    template: Literal["tldr", "hh"] = field(default="tldr", metadata={"help": "the template, e.g. summarization"})
     seed: Optional[int] = field(default=0)
 
 
 OPTIONS = ["A", "B"]
 
-TEMPLATE = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
+Template = namedtuple("Template", ["judge_prompt", "comparison_key", "output_key"])
+
+tldr_prompt = """Which of the following summaries does a better job of summarizing the most important points in the given forum post, without including unimportant or irrelevant details? Judge based on accuracy, coverage, and coherence.
 
 ### Post:
-{post}
+{prompt}
 
 ### Summary A:
 {response0}
@@ -74,8 +85,26 @@ TEMPLATE = """Which of the following summaries does a better job of summarizing 
 FIRST provide a one-sentence comparison of the two summaries, explaining which \
 you prefer and why. SECOND, on a new line, state only "A" or "B" to indicate your choice. Your response should use the format:
 Comparison: <one-sentence comparison and explanation>
-Preferred: <"A" or "B">
-"""
+Preferred: <"A" or "B">"""
+
+TLDR_TEMPLATE = Template(judge_prompt=tldr_prompt, comparison_key="Comparison:", output_key="Preferred:")
+
+
+hh_prompt = """For the following query to a chatbot, which response is more helpful?
+Query: {prompt}
+
+Response A:
+{response0}
+
+Response B:
+{response1}
+
+FIRST provide a one-sentence comparison of the two responses and explain which you feel is more helpful. \
+SECOND, on a new line, state only "A" or "B" to indicate which response is more helpful. Your response should use the format:
+Comparison: <one-sentence comparison and explanation>
+More helpful: <"A" or "B">"""
+
+HH_TEMPLATE = Template(judge_prompt=hh_prompt, comparison_key="Comparison:", output_key="More helpful:")
 
 
 def generate(script_args):
@@ -83,7 +112,7 @@ def generate(script_args):
     if script_args.sanity_check:
         dataset = dataset.select(range(100))
 
-    prompts = dataset["query"]
+    prompts = dataset[script_args.dataset_prompt_field]
 
     sampling_params = SamplingParams(
         temperature=script_args.temperature,
@@ -162,7 +191,7 @@ def generate(script_args):
 
     print(f"generated {len(gens)} steps")
     reference = []
-    for ref_response in dataset["reference_response"]:
+    for ref_response in dataset[script_args.dataset_chosen_field]:
         if ref_response.endswith("<|endoftext|>"):
             ref_response = ref_response.split("<|endoftext|>")[0]
 
@@ -171,7 +200,8 @@ def generate(script_args):
     return prompts, reference, gens
 
 
-def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
+
+def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, prompt_template):
     llm_judge_prompts = []
     generated_indices = []
     random.seed(seed)
@@ -184,7 +214,7 @@ def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed):
             response0 = ref.strip()
             response1 = gen.strip()
 
-        query = TEMPLATE.format(post=prompt, response0=response0, response1=response1)
+        query = prompt_template.format(prompt=prompt, response0=response0, response1=response1)
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": query},
@@ -234,25 +264,41 @@ def llm_as_a_judge(args, prompts, reference, generations, model_name=None):
         stop_token_ids=[tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|eot_id|>")],
     )
 
+    if args.template == "tldr":
+        llm_judge_template = TLDR_TEMPLATE
+    elif args.template == "hh":
+        llm_judge_template = HH_TEMPLATE
+    else:
+        raise NotImplementedError("not a valid template")
+
     ## get reference continuation rewards
     step = 0
     for step_str, generated in generations.items():
         print(f"Evaluating {step_str}")
         llm_judge_prompts, generated_indices = create_llm_judge_prompts(
-            tokenizer, prompts, reference, generated, args.seed
+            tokenizer,
+            prompts,
+            reference,
+            generated,
+            args.seed,
+            llm_judge_template.judge_prompt,
         )
         llm_judge_output = llm.generate(llm_judge_prompts, sampling_params)
         llm_judge_texts = [output.outputs[0].text for output in llm_judge_output]
 
         comparisons, preferred = [], []
         for llm_judge_completion in llm_judge_texts:
-            if "Comparison:" in llm_judge_completion:
-                comparisons.append(llm_judge_completion.split("Comparison:")[1].split("Preferred:")[0].strip())
+            if llm_judge_template.comparison_key in llm_judge_completion:
+                comparisons.append(
+                    llm_judge_completion.split(llm_judge_template.comparison_key)[1]
+                    .split(llm_judge_template.output_key)[0]
+                    .strip()
+                )
             else:
                 comparisons.append("")
 
-            if "Preferred:" in llm_judge_completion:
-                preferred.append(llm_judge_completion.split("Preferred:")[1].strip())
+            if llm_judge_template.output_key in llm_judge_completion:
+                preferred.append(llm_judge_completion.split(llm_judge_template.output_key)[1].strip())
             else:
                 preferred.append("X")
 
