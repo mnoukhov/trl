@@ -1,5 +1,8 @@
-model_name_or_path: mnoukhov/pythia410m-sft-tldr
-model_revision: 00f4e8e4786324e5e368fb964800299749cea535
+# model_name_or_path: /home/toolkit/trl/results/a805570edd5eddcfb7deb3a583d7b4c2
+# wandb_log_id: a805570edd5eddcfb7deb3a583d7b4c2
+model_name_or_path: /home/toolkit/trl/results/26eb19659f00603a0372a843331512b1/output
+wandb_log_id: model_path
+model_paths: .
 # base_model_name: mnoukhov/pythia410m-sft-tldr
 # tokenizer_name: mnoukhov/pythia410m-sft-tldr
 # wandb_log_id: cfb3179a6dd00a0d09b55fc900877f5b

@@ -153,7 +153,6 @@ def generate(script_args):
 
     print(f"generated {len(gens)} steps")
     reference = dataset["query_reference_response"]
-    prompts = dataset["query"]
 
     return prompts, reference, gens
 
@@ -277,7 +276,7 @@ def evaluate(args, prompts, reference, generations, model_name=None):
                 },
             )
 
-        print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
+        print(f"step {step}: reward {mean_reward} win-rate {win_rate} norm-reward {norm_reward}")
 
 
 def main(generate_args, eval_args):
