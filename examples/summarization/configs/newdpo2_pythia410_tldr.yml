@@ -1,8 +1,12 @@
-task_type: "tldr"
-hub_model_id: "mnoukhov/pythia410m-dpo-tldr"
+hub_model_id: "mnoukhov/pythia410m-dpo2-tldr"
+##
 model_name: "mnoukhov/pythia410m-sft-tldr"
-dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
-dataset_eval_split: validation
+## dpo2
+dataset_name: mnoukhov/summarize_from_feedback_tldr3_unlabelled_vllm_pythia410m-dpo-tldr_relabel_pythia1b
+eval_dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
+dataset_eval_split: "validation"
+##
+task_type: "tldr"
 learning_rate: 1e-5
 lr_scheduler_type: cosine
 fp16: True
@@ -18,13 +22,12 @@ beta: 0.05
 use_peft: True
 lora_r: 16
 lora_alpha: 32
-lora_dropout: 0.
 gradient_checkpointing: False
 ## save strategy
-evaluation_strategy: "steps"
+evaluation_strategy: steps
 eval_steps: 0.2
 save_strategy: steps
 save_steps: 0.2
-hub_strategy: all_checkpoints
+push_to_hub: True
 logging_steps: 100
 ddp_find_unused_parameters: False

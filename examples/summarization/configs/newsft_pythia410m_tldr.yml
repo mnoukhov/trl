@@ -5,7 +5,7 @@ push_to_hub: True
 dataset_name: vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144
 dataset_eval_split: validation
 report_to: "wandb"
-learning_rate: 3e-6
+learning_rate: 1e-5
 lr_scheduler_type: cosine
 bf16: True
 gradient_accumulation_steps: 4

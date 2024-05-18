@@ -6,7 +6,6 @@ from typing import List, Optional
 import numpy as np
 import torch
 from datasets import builder, load_dataset
-from huggingface_hub import list_repo_refs
 from peft import PeftModelForCausalLM
 from scalar_rm_model import ScalarModel, ScalarModelConfig
 from transformers import (
@@ -34,8 +33,8 @@ class GenerateScriptArguments:
     num_gpus: Optional[int] = field(default=1)
     base_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
     base_model_revision: Optional[str] = field(default=None)
-    model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
-    model_revisions: Optional[List[str]] = field(default_factory=list)
+    model_name_or_path: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
+    model_paths: Optional[List[str]] = field(default_factory=list)
     # base_model_revision: Optional[str] = field(default=None)
     tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     dataset_name: Optional[str] = field(
@@ -78,65 +77,55 @@ def generate(script_args):
         skip_special_tokens=False,
     )
 
-    refs = list_repo_refs(script_args.model_name, repo_type="model")
     gens = {}
-    revisions = sorted([branch.name for branch in refs.branches])
-    for revision in revisions:
-        if "main" not in script_args.model_revisions and revision == "main":
-            continue
+    model_paths = [script_args.model_name_or_path]
+    # path with possible checkpoint subfolders
+    if os.path.exists(script_args.model_name_or_path):
+        checkpoint_subfolders = [
+            path
+            for path in os.listdir(script_args.model_name_or_path)
+            if path.startswith("checkpoint") and (not script_args.model_paths or path in script_args.model_paths)
+        ]
 
-        if script_args.model_revisions and revision not in script_args.model_revisions:
-            continue
+        # if there are checkpoint subfolders, use those instead of model_path
+        if checkpoint_subfolders:
+            model_paths = [
+                os.path.join(script_args.model_name_or_path, subfolder) for subfolder in checkpoint_subfolders
+            ]
 
-        print(f"generating step {revision}")
+    for model_name_or_path in model_paths:
+        print(f"generating {model_name_or_path}")
+        model_or_checkpoint_name = os.path.basename(model_name_or_path)
 
-        if script_args.base_model_name is None:
-            # merged model
-            model_name = script_args.model_name
-            revision_name = revision
-        else:
+        if script_args.base_model_name is not None:
             # peft model that needs to be merged
             base_model = AutoModelForCausalLM.from_pretrained(
                 script_args.base_model_name, revision=script_args.base_model_revision
             )
             # merge the model and save
-            model = PeftModelForCausalLM.from_pretrained(
-                base_model, script_args.model_name, revision=revision, device="cpu"
-            )
+            model = PeftModelForCausalLM.from_pretrained(base_model, model_name_or_path, device_map="cpu")
             merged = model.merge_and_unload()
-            model_save_path = f"/home/toolkit/trl_results/{script_args.model_name}_merged/{revision}"
+            model_save_path = os.path.join(model_name_or_path, "_merged")
             merged.save_pretrained(model_save_path)
             del model
             del merged
-            model_name = model_save_path
-            revision_name = revision
-            revision = None
+            model_name_or_path = model_save_path
 
         llm = LLM(
-            model=model_name,
-            revision=revision,
+            model=model_name_or_path,
             tokenizer=script_args.tokenizer_name,
             dtype=script_args.gen_dtype,
             tensor_parallel_size=script_args.num_gpus,
             trust_remote_code=True,
-            # max_num_seqs=script_args.generate_batch_size,
         )
-
-        if script_args.tokenizer_name is not None:
-            tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-            if not tokenizer.pad_token:
-                tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer.padding_side = "left"
-
-            llm.set_tokenizer(tokenizer)
 
         generations = llm.generate(prompts, sampling_params)
 
         texts = [output.prompt + output.outputs[0].text for output in generations]
 
-        gens[revision_name] = texts
+        gens[model_or_checkpoint_name] = texts
 
-        dataset = dataset.add_column(f"generations_{revision_name}", texts)
+        dataset = dataset.add_column(f"generations_{model_or_checkpoint_name}", texts)
 
         # delete old model
         destroy_model_parallel()
@@ -150,10 +139,12 @@ def generate(script_args):
         # TODO add hash to dataset path
         # sampling_str = str(sampling_params)
         # sampling_hash = hashlib.sha256(sampling_str.encode()).hexdigest()[:10]
+
+        # TODO fix model name or path string
         dataset_path = os.path.join(
             script_args.output_dir,
             script_args.dataset_name.replace("/", "_"),
-            script_args.model_name.replace("/", "_"),
+            script_args.model_name_or_path.replace("/", "_"),
         )
         os.makedirs(dataset_path, exist_ok=True)
         dataset.save_to_disk(dataset_path)
@@ -163,7 +154,7 @@ def generate(script_args):
     print(f"generated {len(gens)} steps")
     reference = dataset["query_reference_response"]
 
-    return reference, gens
+    return prompts, reference, gens
 
     # ds_info = DatasetInfo(
     #     f"{script_args.dataset_name} split {script_args.train_split} prompts used to generate with {script_args.model_name}"
@@ -173,12 +164,15 @@ def generate(script_args):
     # generated_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
 
 
-def evaluate(args, reference, generations, model_name=None):
+def evaluate(args, prompts, reference, generations, model_name=None):
     if args.wandb_log_id is not None:
         # don't overwrite the wandb name of the original run
         if args.wandb_log_id == "model_name":
             # model name = config_wandblogid
             wandb_log_id = model_name.split("_")[-1]
+        elif args.wandb_log_id == "model_path":
+            # model path = /home/.../wandb_log_id/output
+            wandb_log_id = model_name.split("/")[-2]
         else:
             wandb_log_id = args.wandb_log_id
 
@@ -191,7 +185,8 @@ def evaluate(args, reference, generations, model_name=None):
         log_to_wandb = False
 
     torch_dtype = args.eval_dtype if args.eval_dtype in ["auto", None] else getattr(torch, args.eval_dtype)
-    tokenizer = AutoTokenizer.from_pretrained(args.gold_tokenizer_name)
+    gold_tokenizer_name = args.gold_tokenizer_name if args.gold_tokenizer_name is not None else args.gold_model_name
+    tokenizer = AutoTokenizer.from_pretrained(gold_tokenizer_name)
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
@@ -249,9 +244,10 @@ def evaluate(args, reference, generations, model_name=None):
 
         win_rate = (gen_rewards > ref_rewards).mean().item()
         norm_reward = (gen_rewards - ref_rewards).mean().item()
+        mean_reward = gen_rewards.mean().item()
 
-        if step_str.startswith("step"):
-            step_str = step_str.removeprefix("step")
+        if step_str.startswith("checkpoint-"):
+            step_str = step_str.removeprefix("checkpoint-")
 
         if step_str.isdigit():
             step = int(step_str)
@@ -260,33 +256,42 @@ def evaluate(args, reference, generations, model_name=None):
             step = step + 1
 
         if log_to_wandb:
+            num_samples = 32
+            sample_generations = wandb.Table(
+                columns=["Prompt", "Policy", "Reference"],
+                rows=[
+                    [prompt, pol[len(prompt) :], ref[len(prompt) :]]
+                    for prompt, pol, ref in zip(
+                        prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
+                    )
+                ],
+            )
             wandb.log(
                 {
                     "gold/win_rate": win_rate,
                     "gold/norm_reward": norm_reward,
+                    "gold/reward": mean_reward,
+                    "gold/samples": sample_generations,
                     "train/global_step": step,
-                }
+                },
             )
 
-        print(f"step {step}: win-rate {win_rate} norm-reward {norm_reward}")
+        print(f"step {step}: reward {mean_reward} win-rate {win_rate} norm-reward {norm_reward}")
 
 
 def main(generate_args, eval_args):
-    if eval_args.gold_tokenizer_name is None:
-        eval_args.gold_tokenizer_name = generate_args.tokenizer_name
-
     if generate_args.sanity_check:
         eval_args.wandb_log_id = None
 
     print("GENERATING")
-    reference, generations = generate(generate_args)
+    prompts, reference, generations = generate(generate_args)
     #
     # dataset = load_dataset(generate_args.dataset_name, split=generate_args.split)
     # dataset = dataset.select(range(100))
     # generations = {"step0": dataset["query_reference_response"]}
     # reference = dataset["query_reference_response"]
     print("EVALUATING")
-    evaluate(eval_args, reference, generations, generate_args.model_name)
+    evaluate(eval_args, prompts, reference, generations, generate_args.model_name_or_path)
 
 
 def main_args_dict(args_dict):

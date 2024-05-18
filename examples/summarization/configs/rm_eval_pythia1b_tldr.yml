@@ -1,8 +1,8 @@
 mode: eval
-dataset_name: vwxyzjn/summarize_from_feedback_oai_preprocessing_1706381144
-dataset_eval_split: validation
+dataset_name: mnoukhov/summarize_from_feedback_tldr3_unlabelled_vllm_pythia410m-dpo-tldr
+dataset_eval_split: train
 model_name: cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr
-tokenizer_name: EleutherAI/pythia-1b-deduped
+tokenizer_name: mnoukhov/EleutherAI_pythia-1b-deduped__sft__tldr_55513
 max_length: 640
 per_device_eval_batch_size: 8
 bf16: True

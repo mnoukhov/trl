@@ -1,5 +1,4 @@
 import gc
-import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -18,6 +17,7 @@ builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
 
 @dataclass
 class ScriptArguments:
+    output_dir: Optional[str] = field(default=None)
     output_name: Optional[str] = field(
         default="compare_results",
         metadata={"help": "output folder"},
@@ -45,6 +45,8 @@ class ScriptArguments:
     base_model_revision: Optional[str] = field(default=None)
     ref_model_name: Optional[str] = field(default=None, metadata={"help": "the model name"})
     ref_model_revision: Optional[str] = field(default=None)
+
+    sanity_check: Optional[bool] = field(default=False)
 
 
 def prepare_vllm_model(script_args):
@@ -88,6 +90,9 @@ def generate_vllm(script_args):
     llm, _ = prepare_vllm_model(script_args)
 
     dataset = load_dataset(script_args.dataset_name, split=script_args.split)
+
+    if script_args.sanity_check:
+        dataset = dataset.select(range(32))
 
     prompts = dataset[script_args.dataset_prompt_field]
 
@@ -159,7 +164,7 @@ def relabel(script_args, dataset):
         )
         ref_model = None
     else:
-        assert script_args.ref_model is not None
+        assert script_args.ref_model_name is not None
         model = AutoModelForCausalLM.from_pretrained(
             script_args.model_name,
             revision=script_args.revision,
@@ -246,7 +251,8 @@ def relabel(script_args, dataset):
 
         description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
         relabel_dataset._info.description = description
-        relabel_dataset.push_to_hub(os.path.basename(script_args.output_dir), split="train")
+        if not script_args.sanity_check:
+            relabel_dataset.push_to_hub(script_args.output_name, split="train")
 
 
 def generate_relabel_args_dict(args_dict):

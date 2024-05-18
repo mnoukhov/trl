@@ -49,6 +49,8 @@ class ScriptArguments:
     The arguments for the DPO training script.
     """
 
+    sanity_check: bool = field(default=False, metadata={"help": "only train on 1000 samples"})
+
     # data parameters
     dataset_name: Optional[str] = field(
         default="mnoukhov/openai_summarize_comparisons_tldrprompt_relabel1b", metadata={"help": "the dataset name"}
@@ -327,6 +329,13 @@ def create_and_prepare_dataset(args, tokenizer):
 if __name__ == "__main__":
     parser = HfArgumentParser(ScriptArguments)
     script_args = parser.parse_args_into_dataclasses()[0]
+
+    if script_args.sanity_check:
+        script_args.push_to_hub = False
+        script_args.train_split = script_args.train_split + "[:100]"
+        script_args.eval_split = script_args.eval_split + "[:100]"
+        script_args.gold_eval_split = script_args.gold_eval_split + "[:100]"
+        script_args.save_strategy = "no"
 
     # 1. load a pretrained model
     model, tokenizer, ref_model = create_and_prepare_model(script_args)

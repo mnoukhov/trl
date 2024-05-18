@@ -37,7 +37,7 @@ class PromptAndTextCollator:
             max_length=self.max_prompt_length,
             return_tensors=self.return_tensors,
         )
-        tokenized_batch["prompt"] = prompts
+        # tokenized_batch["prompt"] = prompts
 
         self.tokenizer.padding_side = original_side
 
@@ -159,9 +159,10 @@ class GoldModelRewardCallback(TrainerCallback):
                 total_samples += gold_rewards.size(0)
                 sample_length_sum += policy_output_attention_mask.sum().item()
 
+                prompts_decoded = tokenizer.batch_decode(inputs["input_ids"])
                 # Sample and save to game log if requested (for one batch to save time)
                 for i, (prompt, pol, ref) in enumerate(
-                    zip(inputs["prompt"], policy_output_decoded, ref_output_decoded)
+                    zip(prompts_decoded, policy_output_decoded, ref_output_decoded)
                 ):
                     if len(samples_to_log) < self.log_n_samples_during_eval:
                         samples_to_log.append([prompt, pol[len(prompt) :], ref[len(prompt) :]])

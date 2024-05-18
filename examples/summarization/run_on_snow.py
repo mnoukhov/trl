@@ -19,6 +19,7 @@ def run_exp(exp_dict, savedir, args):
     print(f"code and output dir: {savedir}")
 
     exp_dict["output_dir"] = os.path.join(savedir, "output")
+    os.makedirs(exp_dict["output_dir"], exist_ok=True)
 
     os.environ["WANDB_RUN_ID"] = os.path.basename(savedir)
     os.environ["WANDB_NAME"] = exp_name

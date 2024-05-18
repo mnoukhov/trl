@@ -1,8 +1,11 @@
+import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 import torch
 from accelerate import PartialState
-from callbacks import PerplexityCallback
+
+# from callbacks import PerplexityCallback
 from datasets import builder, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
@@ -20,7 +23,7 @@ class DPOScriptArguments:
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
-    eval_dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
+    eval_dataset_name: Optional[str] = field(default=None, metadata={"help": "the dataset name"})
     beta: float = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
     max_length: int = field(default=512, metadata={"help": "max length of each sample"})
     max_prompt_length: int = field(default=128, metadata={"help": "max length of each sample's prompt"})
@@ -88,13 +91,10 @@ if __name__ == "__main__":
     eval_dataset = load_dataset(eval_dataset_name, split=args.dataset_eval_split)
 
     if args.sanity_check:
-        train_dataset = train_dataset.select(range(50))
-        eval_dataset = eval_dataset.select(range(50))
-        training_args.hub_model_id = None
-
-    if args.task_type == "tldr":
-        train_dataset = train_dataset.rename_column("query", "prompt")
-        eval_dataset = eval_dataset.rename_column("query", "prompt")
+        train_dataset = train_dataset.select(range(128))
+        eval_dataset = eval_dataset.select(range(128))
+        training_args.push_to_hub = False
+        # training_args.hub_model_id = None
 
     ################
     # Training
@@ -113,25 +113,15 @@ if __name__ == "__main__":
         peft_config=get_peft_config(model_config),
     )
 
-    callback = PerplexityCallback(
-        args=training_args,
-        dataset=eval_dataset,
-        tokenizer=tokenizer,
-        accelerator=trainer.accelerator,
-        max_length=args.max_length,
-        max_prompt_length=args.max_prompt_length,
-        prompt_field="prompt",
-        target_field="chosen",
-        hub_model_id=training_args.hub_model_id,
-    )
-
-    trainer.add_callback(callback)
-
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
 
-    if PartialState().is_main_process and training_args.hub_model_id:
-        if model_config.use_peft:
-            model = trainer.model.merge_and_unload()
+    if PartialState().is_main_process and training_args.push_to_hub:
         trainer.push_to_hub(training_args.hub_model_id)
         tokenizer.push_to_hub(training_args.hub_model_id)
+
+    if model_config.use_peft:
+        merged_path = os.path.join(training_args.output_dir, "_merged")
+        model = trainer.model.merge_and_unload()
+        model.save_pretrained(merged_path)
+        tokenizer.save_pretrained(merged_path)

@@ -28,6 +28,7 @@ python examples/scripts/reward_modeling.py \
     --max_length=512 \
 """
 
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -81,9 +82,9 @@ def tldr_preprocess_function(examples):
         "input_ids_rejected": [],
         "attention_mask_rejected": [],
     }
-    for query_chosen, query_rejected in zip(examples["query_chosen"], examples["query_rejected"]):
-        tokenized_chosen = tokenizer(query_chosen)
-        tokenized_rejected = tokenizer(query_rejected)
+    for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        tokenized_chosen = tokenizer(prompt + chosen)
+        tokenized_rejected = tokenizer(prompt + rejected)
 
         new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
         new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
@@ -95,20 +96,20 @@ def tldr_preprocess_function(examples):
 
 def tldr_relabel_dataset_fn(batch: Dict[str, List]):
     relabel_batch = {
-        "query": [],
+        "prompt": [],
         "chosen": [],
         "rejected": [],
         "pred_chosen": [],
         "pred_rejected": [],
     }
-    for query, chosen, rejected, pred_chosen, pred_rejected in zip(
-        batch["query"],
+    for prompt, chosen, rejected, pred_chosen, pred_rejected in zip(
+        batch["prompt"],
         batch["chosen"],
         batch["rejected"],
         batch["pred_chosen"],
         batch["pred_rejected"],
     ):
-        relabel_batch["query"].append(query)
+        relabel_batch["prompt"].append(prompt)
         if pred_chosen >= pred_rejected:
             relabel_batch["chosen"].append(chosen)
             relabel_batch["rejected"].append(rejected)
@@ -124,6 +125,11 @@ def tldr_relabel_dataset_fn(batch: Dict[str, List]):
 
 
 def tldr_relabel_dataset(dataset, pred_chosen, pred_rejected):
+    if "pred_chosen" in dataset.column_names:
+        dataset = dataset.remove_columns(["pred_chosen"])
+    if "pred_rejected" in dataset.column_names:
+        dataset = dataset.remove_columns(["pred_rejected"])
+
     dataset = dataset.add_column("pred_chosen", pred_chosen)
     dataset = dataset.add_column("pred_rejected", pred_rejected)
     dataset = dataset.map(tldr_relabel_dataset_fn, batched=True, remove_columns=dataset.column_names)
@@ -163,7 +169,7 @@ if __name__ == "__main__":
 
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "<|padding|>"})
-        model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     ################
     # Dataset
@@ -187,7 +193,7 @@ if __name__ == "__main__":
         and len(x["input_ids_rejected"]) <= reward_config.max_length
     )
     train_dataset = raw_datasets[script_args.dataset_train_split]
-    eval_dataset = raw_datasets[script_args.dataset_eval_split]
+    eval_dataset = raw_datasets[script_args.dataset_eval_split] if script_args.dataset_eval_split else None
 
     ################
     # Training
@@ -207,6 +213,8 @@ if __name__ == "__main__":
     elif script_args.mode == "eval":
         results = trainer.evaluate()
         print(results)
+        with open(os.path.join(reward_config.output_dir, "eval.txt"), "w") as f:
+            print(results, file=f)
     elif script_args.mode == "relabel":
         relabel_dataset = DatasetDict()
 
@@ -215,10 +223,11 @@ if __name__ == "__main__":
             raw_datasets[script_args.dataset_train_split], preds[:, 0], preds[:, 1]
         )
 
-        preds = trainer.predict(eval_dataset).predictions
-        relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
-            raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
-        )
+        if script_args.dataset_eval_split:
+            preds = trainer.predict(eval_dataset).predictions
+            relabel_dataset[script_args.dataset_eval_split] = tldr_relabel_dataset(
+                raw_datasets[script_args.dataset_eval_split], preds[:, 0], preds[:, 1]
+            )
 
         if trainer.accelerator.is_local_main_process and not script_args.sanity_check:
             print("Pushing")
