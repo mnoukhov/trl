@@ -2,24 +2,29 @@ import warnings
 from dataclasses import dataclass, field
 
 import torch
-from datasets import load_dataset
+import tqdm
+from datasets import builder, load_dataset
 from torch.nn import CrossEntropyLoss
 from transformers import AutoModelForCausalLM, HfArgumentParser, Pipeline, pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.pt_utils import KeyDataset
 
 
+builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
+
+
 @dataclass
 class ScriptArguments:
-    model_name_or_path: str = field()
+    output_dir: str = field()
+    model_name_or_path: str = field(default="mnoukhov/pythia410m-sft-tldr")
     dataset_name: str = field(
-        default="vwxyzjn/summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144",
+        default="mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144",
         metadata={"help": "the dataset name"},
     )
     dataset_split: str = field(default="validation", metadata={"help": "the name of the training set of the dataset"})
-    # dataset_prompt_field: str = field(
-    #     default="query",
-    # )
+    dataset_prompt_field: str = field(
+        default="prompt",
+    )
     # dataset_label_field: str = field(
     #     default="reference_response",
     # )
@@ -114,19 +119,36 @@ def ignore_prompt_labels(batch, response_token_ids, ignore_index=-100, tokenizer
     return batch
 
 
-if __name__ == "__main__":
-    parser = HfArgumentParser((ScriptArguments))
-    args = parser.parse_args_into_dataclasses()[0]
-
+def main(args):
     dataset = load_dataset(args.dataset_name, split=args.dataset_split)
+
+    dataset = dataset.map(
+        lambda x: {
+            "prompt_chosen": x[args.dataset_prompt_field] + x["chosen"],
+            "prompt_rejected": x[args.dataset_prompt_field] + x["rejected"],
+        }
+    )
 
     ppl_pipeline = pipeline("perplexity", model=args.model_name_or_path, device=0)
 
-    ppls = []
-    for out in ppl_pipeline(
-        KeyDataset(dataset, "query_reference_response"), prompt_template="TL;DR:", batch_size=args.batch_size
-    ):
-        ppls += [r["ppl"] for r in out]
+    for column in ["prompt_chosen", "prompt_rejected"]:
+        ppls = []
+        for out in tqdm.tqdm(
+            ppl_pipeline(KeyDataset(dataset, column), prompt_template="TL;DR:", batch_size=args.batch_size)
+        ):
+            ppls += [r["ppl"] for r in out]
 
-    avg_ppl = sum(ppls) / len(ppls)
-    print(f"average ppl {avg_ppl}")
+        avg_ppl = sum(ppls) / len(ppls)
+        print(f"average {column} ppl {avg_ppl}")
+
+
+def main_args_dict(args_dict):
+    parser = HfArgumentParser((ScriptArguments))
+    args = parser.parse_dict(args_dict)[0]
+    main(args)
+
+
+if __name__ == "__main__":
+    parser = HfArgumentParser((ScriptArguments))
+    args = parser.parse_args_into_dataclasses()[0]
+    main(args)

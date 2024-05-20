@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import generate_and_eval
 import generate_and_llm_judge
+import perplexity
 import yaml
 from accelerate.commands import launch
 from generate_vllm import generate_relabel_args_dict
@@ -81,6 +82,9 @@ def run_exp(exp_dict, savedir, args):
         accelerate_launch("scalar_rm_model.py", exp_dict, args)
     elif exp_name.startswith("costa_dpo"):
         accelerate_launch("costa_dpo.py", exp_dict, args)
+    elif exp_name.startswith("ppl"):
+        exp_dict.pop("save_strategy", None)
+        perplexity.main_args_dict(exp_dict)
     else:
         raise Exception(f"Config file {exp_name} does not start with one of the correct prefixes")
 

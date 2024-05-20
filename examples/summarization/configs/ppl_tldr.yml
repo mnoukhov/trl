@@ -1,0 +1,3 @@
+model_name_or_path: mnoukhov/pythia410m-sft-tldr
+dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144
+dataset_split: train
