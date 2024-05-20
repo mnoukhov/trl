@@ -17,12 +17,12 @@ class ScriptArguments:
         metadata={"help": "the dataset name"},
     )
     dataset_split: str = field(default="validation", metadata={"help": "the name of the training set of the dataset"})
-    dataset_prompt_field: str = field(
-        default="query",
-    )
-    dataset_label_field: str = field(
-        default="reference_response",
-    )
+    # dataset_prompt_field: str = field(
+    #     default="query",
+    # )
+    # dataset_label_field: str = field(
+    #     default="reference_response",
+    # )
     batch_size: int = field(default=16)
 
 
