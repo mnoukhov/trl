@@ -6,6 +6,7 @@ from datasets import load_dataset
 from torch.nn import CrossEntropyLoss
 from transformers import AutoModelForCausalLM, HfArgumentParser, Pipeline, pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
+from transformers.pipelines.pt_utils import KeyDataset
 
 
 @dataclass
@@ -22,10 +23,15 @@ class ScriptArguments:
     dataset_label_field: str = field(
         default="reference_response",
     )
+    batch_size: int = field(default=16)
 
 
 class PerplexityPipeline(Pipeline):
     label_pad_token_id = -100
+
+    def __init__(self, **kwargs):
+        self.loss_fct = CrossEntropyLoss(reduction="none")
+        super().__init__(**kwargs)
 
     def __call__(self, inputs, **kwargs):
         inputs = (inputs,)
@@ -56,27 +62,26 @@ class PerplexityPipeline(Pipeline):
         if self.model.config.pad_token_id is None:
             self.model.config.pad_token_id = pad_token_id
 
-        loss_fct = CrossEntropyLoss(reduction="none")
+        out_logits = self.model(
+            input_ids=model_inputs["input_ids"],
+            attention_mask=model_inputs["attention_mask"],
+            labels=model_inputs["labels"],
+            use_cache=False,
+        ).logits
 
-        with torch.no_grad():
-            out_logits = self.model(
-                input_ids=model_inputs["input_ids"],
-                attention_mask=model_inputs["attention_mask"],
-                labels=model_inputs["labels"],
-            ).logits
+        shift_logits = out_logits[..., :-1, :]
+        shift_labels = model_inputs["labels"][..., 1:]
+        shift_attention_mask_batch = model_inputs["attention_mask"][..., 1:]
 
-        shift_logits = out_logits[..., :-1, :].contiguous()
-        shift_labels = model_inputs["labels"][..., 1:].contiguous()
-        shift_attention_mask_batch = model_inputs["attention_mask"][..., 1:].contiguous()
-
-        nll_batch = (loss_fct(shift_logits.transpose(1, 2), shift_labels) * shift_attention_mask_batch).sum(
+        nll_batch = (self.loss_fct(shift_logits.transpose(1, 2), shift_labels) * shift_attention_mask_batch).sum(
             1
         ) / shift_attention_mask_batch.sum(1)
-        ppl_batch = torch.exp(nll_batch)
-        return (nll_batch, ppl_batch)
+
+        return nll_batch
 
     def postprocess(self, model_outputs, function_to_apply=None, top_k=1, _legacy=True):
-        nll_tensor, ppl_tensor = model_outputs
+        nll_tensor = model_outputs
+        ppl_tensor = torch.exp(nll_tensor)
 
         return [{"nll": nll.item(), "ppl": ppl.item()} for nll, ppl in zip(nll_tensor, ppl_tensor)]
 
@@ -115,11 +120,13 @@ if __name__ == "__main__":
 
     dataset = load_dataset(args.dataset_name, split=args.dataset_split)
 
-    ppl_pipeline = pipeline("perplexity", model=args.model_name_or_path, device_map="auto")
+    ppl_pipeline = pipeline("perplexity", model=args.model_name_or_path, device=0)
 
-    results = ppl_pipeline(
-        dataset, prompt_template="TL;DR:", dataset_text_field="query_reference_response", batch_size=8
-    )
-    ppls = [r["ppl"] for r in results]
+    ppls = []
+    for out in ppl_pipeline(
+        KeyDataset(dataset, "query_reference_response"), prompt_template="TL;DR:", batch_size=args.batch_size
+    ):
+        ppls += [r["ppl"] for r in out]
+
     avg_ppl = sum(ppls) / len(ppls)
     print(f"average ppl {avg_ppl}")
