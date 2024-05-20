@@ -2,9 +2,9 @@ import warnings
 from dataclasses import dataclass, field
 
 import torch
-import tqdm
 from datasets import builder, load_dataset
 from torch.nn import CrossEntropyLoss
+from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, HfArgumentParser, Pipeline, pipeline
 from transformers.pipelines import PIPELINE_REGISTRY
 from transformers.pipelines.pt_utils import KeyDataset
@@ -120,6 +120,8 @@ def ignore_prompt_labels(batch, response_token_ids, ignore_index=-100, tokenizer
 
 
 def main(args):
+    print(f"model {args.model_name_or_path}")
+    print(f"dataset {args.dataset_name}")
     dataset = load_dataset(args.dataset_name, split=args.dataset_split)
 
     dataset = dataset.map(
@@ -133,8 +135,9 @@ def main(args):
 
     for column in ["prompt_chosen", "prompt_rejected"]:
         ppls = []
-        for out in tqdm.tqdm(
-            ppl_pipeline(KeyDataset(dataset, column), prompt_template="TL;DR:", batch_size=args.batch_size)
+        for out in tqdm(
+            ppl_pipeline(KeyDataset(dataset, column), prompt_template="TL;DR:", batch_size=args.batch_size),
+            total=len(dataset),
         ):
             ppls += [r["ppl"] for r in out]
 
