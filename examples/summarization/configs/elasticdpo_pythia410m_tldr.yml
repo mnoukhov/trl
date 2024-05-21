@@ -1,5 +1,7 @@
 task_type: "tldr"
-hub_model_id: "mnoukhov/pythia410m-dpo-tldr-full"
+ema_decay: 0.99
+# hub_model_id: "mnoukhov/pythia410m-emadpo-tldr"
+push_to_hub: False
 model_name: "mnoukhov/pythia410m-sft-tldr"
 dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
 dataset_eval_split: validation
@@ -15,7 +17,7 @@ max_prompt_length: 512
 max_target_length: 128
 beta: 0.05
 ## peft
-# use_peft: False
+use_peft: False
 # lora_r: 16
 # lora_alpha: 32
 # lora_dropout: 0.

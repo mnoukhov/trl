@@ -50,6 +50,9 @@ def run_exp(exp_dict, savedir, args):
     elif exp_name.startswith("newdpo"):
         print("DPO")
         accelerate_launch("dpo.py", exp_dict, args)
+    elif exp_name.startswith("elasticdpo"):
+        print("Elastic DPO")
+        accelerate_launch("elastic_dpo.py", exp_dict, args)
     elif exp_name.startswith("rm"):
         accelerate_launch("reward_modeling.py", exp_dict, args)
     elif exp_name.startswith("gptrm"):
