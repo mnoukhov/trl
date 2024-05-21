@@ -1,0 +1,9 @@
+dataset_name: /home/toolkit/trl/results/0f520210202a9bd8d0f3712df2058b39/output/vwxyzjn_summarize_from_feedback_tldr_3_filtered_oai_preprocessing_1706381144/_home_toolkit_trl_results_a29eb1c0ecf9da0382b9643b958bd347_code_results_/
+wandb_log_id: 0f520210202a9bd8d0f3712df2058b39
+gold_model_name: mnoukhov/pythia1b-sft-rm-tldrprompt
+eos_token: False
+# split: validation[:10]
+# gold_model_name: cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr
+# gold_tokenizer_name: EleutherAI/pythia-1b-deduped
+# temperature: 0.010001
+eval_batch_size: 8

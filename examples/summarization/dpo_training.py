@@ -281,8 +281,8 @@ def create_and_prepare_gold_model(args):
         device_map=gold_device_map,
     )
 
-    # if getattr(gold_model.config, "pad_token_id", None) is None:
-    #     gold_model.config.pad_token_id = gold_model.config.eos_token_id
+    if getattr(gold_model.config, "pad_token_id", None) is None:
+        gold_model.config.pad_token_id = gold_model.config.eos_token_id
 
     return gold_model
 
@@ -448,6 +448,7 @@ if __name__ == "__main__":
                 script_args.gold_load_and_unload,
                 script_args.log_n_samples_during_eval,
                 generation_config,
+                gen_reference=False,
             )
         else:
             if script_args.gold_eval == "gen":

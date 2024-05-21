@@ -79,6 +79,7 @@ class GoldModelRewardCallback(TrainerCallback):
         gold_load_and_unload=False,
         log_n_samples_during_eval=0,
         generation_config=None,
+        gen_reference=True,
     ):
         self.max_length = max_length
         self.log_n_samples_during_eval = log_n_samples_during_eval
@@ -104,6 +105,7 @@ class GoldModelRewardCallback(TrainerCallback):
         self.completed_step = -1
         self.gold_model = gold_model
         self.gold_load_and_unload = gold_load_and_unload
+        self.gen_reference = gen_reference
         # keep model on gpu the whole time
         if not self.gold_load_and_unload:
             self.gold_model = self.accelerator.prepare(self.gold_model)
@@ -147,9 +149,8 @@ class GoldModelRewardCallback(TrainerCallback):
             # gold reward
             policy_output_attention_mask = (policy_output_ids != tokenizer.pad_token_id).to(torch.int64)
             with torch.no_grad():
-                gold_rewards = self.gold_model(
-                    input_ids=policy_output_ids, attention_mask=policy_output_attention_mask
-                )[0]
+                gold_output = self.gold_model(input_ids=policy_output_ids, attention_mask=policy_output_attention_mask)
+                gold_rewards = gold_output[0]
 
             gold_rewards = self.accelerator.gather_for_metrics(gold_rewards)
 
@@ -161,6 +162,9 @@ class GoldModelRewardCallback(TrainerCallback):
 
                 prompts_decoded = tokenizer.batch_decode(inputs["input_ids"])
                 # Sample and save to game log if requested (for one batch to save time)
+                if ref_output_decoded is None:
+                    ref_output_decoded = ["" for _ in range(len(prompts_decoded))]
+
                 for i, (prompt, pol, ref) in enumerate(
                     zip(prompts_decoded, policy_output_decoded, ref_output_decoded)
                 ):
@@ -204,13 +208,18 @@ class GoldModelRewardCallback(TrainerCallback):
             generation_config=self.generation_config,
         )
 
-        # if self.ref_model is None:
-        with self.accelerator.unwrap_model(model).disable_adapter():
-            reference_output = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                generation_config=self.generation_config,
-            )
+        if self.gen_reference:
+            with self.accelerator.unwrap_model(model).disable_adapter():
+                reference_output = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=self.generation_config,
+                )
+            reference_output = pad_to_length(reference_output, self.max_length, tokenizer.pad_token_id)
+            reference_output_decoded = tokenizer.batch_decode(reference_output, skip_special_tokens=True)
+        else:
+            reference_output_decoded = None
+
         # else:
         #     reference_output = self.ref_model.generate(
         #         **inputs,
@@ -219,9 +228,6 @@ class GoldModelRewardCallback(TrainerCallback):
 
         policy_output = pad_to_length(policy_output, self.max_length, tokenizer.pad_token_id)
         policy_output_decoded = tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-
-        reference_output = pad_to_length(reference_output, self.max_length, tokenizer.pad_token_id)
-        reference_output_decoded = tokenizer.batch_decode(reference_output, skip_special_tokens=True)
 
         if return_ids:
             return policy_output_decoded, reference_output_decoded, policy_output

@@ -6,6 +6,8 @@ from copy import deepcopy
 
 import generate_and_eval
 import generate_and_llm_judge
+import hf_generate_and_eval
+import load_and_eval
 import perplexity
 import yaml
 from accelerate.commands import launch
@@ -73,6 +75,13 @@ def run_exp(exp_dict, savedir, args):
         exp_dict.pop("save_strategy", None)
         exp_dict["num_gpus"] = args.gpus
         generate_and_eval.main_args_dict(exp_dict)
+    elif exp_name.startswith("hfgeneval"):
+        exp_dict.pop("save_strategy", None)
+        exp_dict["num_gpus"] = args.gpus
+        accelerate_launch("hf_generate_and_eval.py", exp_dict, args)
+    elif exp_name.startswith("loadeval"):
+        exp_dict.pop("save_strategy", None)
+        accelerate_launch("load_and_eval.py", exp_dict, args)
     elif exp_name.startswith("genjudge"):
         exp_dict.pop("save_strategy", None)
         exp_dict["num_gpus"] = args.gpus
