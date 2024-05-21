@@ -1,0 +1,11 @@
+output_dir: hh-rlhf-gen_pythia2.8b-dpo
+dataset_name: "sophiex/hh-rlhf"
+model_name: null
+lora_model: True
+train_split: train[:20000]
+batch_size: 4
+max_prompt_length: 256
+max_new_tokens: 256
+temperature: 0.7
+top_p: 1.0
+dtype: bfloat16
