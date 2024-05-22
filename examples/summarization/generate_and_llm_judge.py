@@ -37,10 +37,10 @@ class GenerateScriptArguments:
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
     dataset_prompt_field: str = field(
-        default="prompt", metadata={"help": "name of the prompt field in the dataset, e.g. 'query' in summarization"}
+        default="query", metadata={"help": "name of the prompt field in the dataset, e.g. 'query' in summarization"}
     )
     dataset_chosen_field: str = field(
-        default="chosen",
+        default="reference_response",
         metadata={"help": "name of the chosen field in the dataset, e.g. 'reference_response' in summarization"},
     )
     split: Optional[str] = field(default="validation", metadata={"help": "the dataset name"})
@@ -198,7 +198,6 @@ def generate(script_args):
         reference.append(ref_response.strip())
 
     return prompts, reference, gens
-
 
 
 def create_llm_judge_prompts(tokenizer, prompts, reference, generated, seed, prompt_template):
