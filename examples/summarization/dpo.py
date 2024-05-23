@@ -1,6 +1,6 @@
 import os
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from typing import Literal, Optional
 
 import torch
 from accelerate import PartialState
@@ -10,6 +10,7 @@ from datasets import builder, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
+import wandb
 from trl import DPOTrainer, ModelConfig
 from trl.trainer.utils import get_kbit_device_map, get_peft_config, get_quantization_config
 
@@ -23,6 +24,9 @@ class DPOScriptArguments:
     dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
     dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
     dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
+    loss_type: Literal["sigmoid", "hinge", "ipo"] = field(
+        default="sigmoid",
+    )
     eval_dataset_name: Optional[str] = field(default=None, metadata={"help": "the dataset name"})
     beta: float = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
     max_length: int = field(default=512, metadata={"help": "max length of each sample"})
@@ -111,10 +115,14 @@ if __name__ == "__main__":
         max_prompt_length=args.max_prompt_length,
         generate_during_eval=args.generate_during_eval,
         peft_config=get_peft_config(model_config),
+        loss_type=args.loss_type,
     )
 
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
+
+    # log dpo config to wandb
+    wandb.config.update(asdict(args), allow_val_change=True)
 
     if PartialState().is_main_process and training_args.push_to_hub:
         trainer.push_to_hub(training_args.hub_model_id)
