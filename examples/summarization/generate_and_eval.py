@@ -147,6 +147,8 @@ def generate(script_args):
             script_args.model_name_or_path.replace("/", "_"),
         )
         os.makedirs(dataset_path, exist_ok=True)
+        print("saving dataset to")
+        print(dataset_path)
         dataset.save_to_disk(dataset_path)
         with open(f"{dataset_path}_sampling_params.txt", "w") as f:
             print(sampling_params, file=f)
@@ -256,22 +258,22 @@ def evaluate(args, prompts, reference, generations, model_name=None):
             step = step + 1
 
         if log_to_wandb:
-            num_samples = 32
-            sample_generations = wandb.Table(
-                columns=["Prompt", "Policy", "Reference"],
-                rows=[
-                    [prompt, pol[len(prompt) :], ref[len(prompt) :]]
-                    for prompt, pol, ref in zip(
-                        prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
-                    )
-                ],
-            )
+            # num_samples = 32
+            # sample_generations = wandb.Table(
+            #     columns=["Prompt", "Policy", "Reference"],
+            #     rows=[
+            #         [prompt, pol[len(prompt) :], ref[len(prompt) :]]
+            #         for prompt, pol, ref in zip(
+            #             prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
+            #         )
+            #     ],
+            # )
             wandb.log(
                 {
                     "gold/win_rate": win_rate,
                     "gold/norm_reward": norm_reward,
                     "gold/reward": mean_reward,
-                    "gold/samples": sample_generations,
+                    # "gold/samples": sample_generations,
                     "train/global_step": step,
                 },
             )
@@ -280,8 +282,8 @@ def evaluate(args, prompts, reference, generations, model_name=None):
 
 
 def main(generate_args, eval_args):
-    if generate_args.sanity_check:
-        eval_args.wandb_log_id = None
+    # if generate_args.sanity_check:
+    #     eval_args.wandb_log_id = None
 
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)
