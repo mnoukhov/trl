@@ -51,7 +51,7 @@ class DPOScriptArguments:
 
 if __name__ == "__main__":
     parser = HfArgumentParser((DPOScriptArguments, TrainingArguments, ModelConfig))
-    args, training_args, model_config = parser.parse_args_into_dataclasses()
+    args, training_args, model_config, _ = parser.parse_args_into_dataclasses(return_remaining_strings=True)
 
     if training_args.gradient_checkpointing:
         training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
@@ -122,7 +122,8 @@ if __name__ == "__main__":
     trainer.train(resume_from_checkpoint=last_checkpoint)
 
     # log dpo config to wandb
-    wandb.config.update(asdict(args), allow_val_change=True)
+    if not args.sanity_check:
+        wandb.config.update(asdict(args), allow_val_change=True)
 
     if PartialState().is_main_process and training_args.push_to_hub:
         trainer.push_to_hub(training_args.hub_model_id)

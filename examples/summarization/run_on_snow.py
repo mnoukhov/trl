@@ -44,17 +44,26 @@ def run_exp(exp_dict, savedir, args):
     elif exp_name.startswith("rlhf"):
         print("RLHF")
         accelerate_launch("rl_training.py", exp_dict, args)
-    elif exp_name.startswith("dpo"):
+    elif exp_name.startswith("dpo_") or exp_name.startswith("dpo1_"):
         print("DPO")
         accelerate_launch("dpo_training.py", exp_dict, args)
     elif exp_name.startswith("newdpo"):
         print("DPO")
         accelerate_launch("dpo.py", exp_dict, args)
-    if exp_name.startswith("genandeval"):
+    elif exp_name.startswith("dpoandeval"):
+        print("DPO")
+        accelerate_launch("dpo.py", exp_dict, args)
+        exp_dict["num_gpus"] = args.gpus
+        exp_dict["dataset_name"] = exp_dict["generate_dataset_name"]
+        exp_dict["model_name_or_path"] = exp_dict["output_dir"]
+        python_launch("generate_for_eval.py", exp_dict)
+        exp_dict["dataset_name"] = os.path.join(exp_dict["output_dir"], exp_dict["generated_output_name"])
+        accelerate_launch("load_and_eval.py", exp_dict, args)
+    elif exp_name.startswith("genandeval"):
         print("GENERATE AND EVAL")
         exp_dict.pop("save_strategy", None)
         exp_dict["num_gpus"] = args.gpus
-        # python_launch("generate_for_eval.py", exp_dict)
+        python_launch("generate_for_eval.py", exp_dict)
         exp_dict["dataset_name"] = os.path.join(exp_dict["output_dir"], exp_dict["generated_output_name"])
         accelerate_launch("load_and_eval.py", exp_dict, args)
     elif exp_name.startswith("elasticdpo"):
