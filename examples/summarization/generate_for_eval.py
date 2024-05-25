@@ -16,6 +16,7 @@ from vllm.distributed.parallel_state import destroy_model_parallel
 
 
 builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 @dataclass
@@ -120,7 +121,7 @@ def generate(script_args):
         gc.collect()
         torch.cuda.empty_cache()
         ray.shutdown()
-        # torch.distributed.destroy_process_group()
+        torch.distributed.destroy_process_group()
 
     dataset_path = os.path.join(script_args.output_dir, script_args.generated_output_name)
     os.makedirs(dataset_path, exist_ok=True)

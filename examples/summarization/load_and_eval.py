@@ -7,7 +7,6 @@ import torch
 from accelerate import PartialState
 from accelerate.utils import gather_object, tqdm
 from datasets import builder, load_from_disk
-
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -30,6 +29,7 @@ class EvalScriptArguments:
     dataset_name: Optional[str] = field(
         default="arianhosseini/openai_summarize_unlabelled", metadata={"help": "the dataset name"}
     )
+    model_name_or_path: Optional[str] = field(default=None)
     wandb_log_id: Optional[str] = field(default=None)
     gold_model_name: Optional[str] = field(default="EleutherAI/pythia-410m", metadata={"help": "the model name"})
     gold_model_revision: Optional[str] = field(default=None)
@@ -41,18 +41,19 @@ class EvalScriptArguments:
     ensure_eos: Optional[bool] = field(default=None)
 
 
-def evaluate(args, prompts, reference, generations, model_name=None):
+def evaluate(args, prompts, reference, generations):
     if args.wandb_log_id is not None:
         # don't overwrite the wandb name of the original run
         if args.wandb_log_id == "model_name":
             # model name = config_wandblogid
-            wandb_log_id = model_name.split("_")[-1]
+            wandb_log_id = args.model_name_or_path.split("_")[-1]
         elif args.wandb_log_id == "model_path":
             # model path = /home/.../wandb_log_id/output
-            wandb_log_id = model_name.split("/")[-2]
+            wandb_log_id = args.model_name_or_path.split("/")[-2]
         else:
             wandb_log_id = args.wandb_log_id
 
+        print(wandb_log_id)
         os.environ.pop("WANDB_NAME")
         # original_name = wandb_name.removeprefix("geneval_")
         wandb.init(id=wandb_log_id, resume="allow")
@@ -82,7 +83,7 @@ def evaluate(args, prompts, reference, generations, model_name=None):
         tokenizer=tokenizer,
         device=distributed_state.device,
         function_to_apply="none",
-        # batch_size=args.eval_batch_size,
+        batch_size=args.eval_batch_size,
     )
 
     ref_outputs = []
@@ -95,15 +96,23 @@ def evaluate(args, prompts, reference, generations, model_name=None):
             ref_outputs.extend([o["score"] for o in out])
 
     ref_outputs = gather_object(ref_outputs)
+    ref_rewards = np.array(ref_outputs)
 
-    if distributed_state.is_main_process:
-        ref_rewards = np.array(ref_outputs)
+    step = 0
+    for step_str, query_response in generations.items():
+        gen_rewards = []
+        with distributed_state.split_between_processes(query_response) as text:
+            for out in tqdm(
+                reward_pipeline(text, batch_size=args.eval_batch_size),
+            ):
+                if isinstance(out, dict):
+                    out = [out]
+                gen_rewards.extend([o["score"] for o in out])
 
-        step = 0
-        for step_str, query_response in generations.items():
-            gen_outputs = reward_pipeline(query_response)
-            gen_rewards = np.array([out["score"] for out in gen_outputs])
+        gen_rewards = gather_object(gen_rewards)
+        gen_rewards = np.array(gen_rewards)
 
+        if distributed_state.is_main_process:
             win_rate = (gen_rewards > ref_rewards).mean().item()
             norm_reward = (gen_rewards - ref_rewards).mean().item()
             mean_reward = gen_rewards.mean().item()
@@ -142,7 +151,6 @@ def evaluate(args, prompts, reference, generations, model_name=None):
 
 
 def main(args):
-    print("LOADING GENERATED")
     dataset = load_from_disk(args.dataset_name)
 
     # TODO
@@ -154,13 +162,13 @@ def main(args):
         dataset = dataset.select(range(100))
         args.wandb_log_id = None
 
-    generated_col = dataset.column_names[-1]
+    generated_columns = [name for name in dataset.column_names if "checkpoint" in name]
 
     if args.ensure_eos is not None:
         eos_token = "<|endoftext|>"
 
         def ensure_eos_or_not(example):
-            for column_name in ["query_reference_response", generated_col]:
+            for column_name in ["query_reference_response"] + generated_columns:
                 if args.ensure_eos and not example[column_name].endswith(eos_token):
                     example[column_name] = example[column_name] + eos_token
                 elif not args.ensure_os:
@@ -173,11 +181,12 @@ def main(args):
     prompts = dataset["query"]
     reference = dataset["query_reference_response"]
 
-    ckpt_str = generated_col.split("_")[1]
-    generations = {ckpt_str: dataset[generated_col]}
+    generations = {}
+    for column_name in generated_columns:
+        model_name, checkpoint_name = column_name.split("_")
+        generations[checkpoint_name] = dataset[column_name]
 
-    print("EVALUATING")
-    evaluate(args, prompts, reference, generations, model_name=generated_col)
+    evaluate(args, prompts, reference, generations)
 
 
 def main_args_dict(args_dict):

@@ -53,11 +53,13 @@ def run_exp(exp_dict, savedir, args):
     elif exp_name.startswith("dpoandeval"):
         print("DPO")
         accelerate_launch("dpo.py", exp_dict, args)
-        exp_dict["num_gpus"] = args.gpus
+        # sadly multigpu can't release mem
+        exp_dict["num_gpus"] = 1
         exp_dict["dataset_name"] = exp_dict["generate_dataset_name"]
         exp_dict["model_name_or_path"] = exp_dict["output_dir"]
         python_launch("generate_for_eval.py", exp_dict)
         exp_dict["dataset_name"] = os.path.join(exp_dict["output_dir"], exp_dict["generated_output_name"])
+        print("LOAD AND EVAL")
         accelerate_launch("load_and_eval.py", exp_dict, args)
     elif exp_name.startswith("genandeval"):
         print("GENERATE AND EVAL")
