@@ -121,9 +121,8 @@ if __name__ == "__main__":
     last_checkpoint = get_last_checkpoint(training_args.output_dir)
     trainer.train(resume_from_checkpoint=last_checkpoint)
 
-    # log dpo config to wandb
-    if not args.sanity_check:
-        wandb.config.update(asdict(args), allow_val_change=True)
+    wandb.init(resume=True)
+    wandb.config.update(asdict(args), allow_val_change=True)
 
     if PartialState().is_main_process and training_args.push_to_hub:
         trainer.push_to_hub(training_args.hub_model_id)

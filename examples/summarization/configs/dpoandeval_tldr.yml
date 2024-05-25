@@ -1,3 +1,4 @@
+run_name: dpoandeval_tldr
 task_type: "tldr"
 # hub_model_id: "mnoukhov/pythia410m-dpo-tldr-full"
 push_to_hub: False
