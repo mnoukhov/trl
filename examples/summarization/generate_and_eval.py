@@ -5,9 +5,11 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from accelerate import PartialState
 from datasets import builder, load_dataset
 from peft import PeftModelForCausalLM
 from scalar_rm_model import ScalarModel, ScalarModelConfig
+from tqdm.auto import tqdm
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
@@ -192,38 +194,38 @@ def evaluate(args, prompts, reference, generations, model_name=None):
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    if args.gold_model_name.startswith("vwxyzjn"):
-        # ScalarModel
-        scalar_model_config = ScalarModelConfig.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-        )
-        # hack to remove the path
-        # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
-        if scalar_model_config.base_model.startswith("models/"):
-            original_model = scalar_model_config.base_config["_name_or_path"].split("/")[2]
-            sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
-            scalar_model_config.base_config["_name_or_path"] = sft_model
-            scalar_model_config.base_model = sft_model
-            _, seed, _ = args.gold_model_revision.split("__")
-            scalar_model_config.base_model_revision = f"sft__{seed}__1708611267"
-
-        # quantization_config = get_quantization_config(model_config)
-        model = ScalarModel.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            config=scalar_model_config,
-            torch_dtype=torch_dtype,
-            use_flash_attention_2=args.flash_attention,
-            device_map="auto",
-        )
-    else:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            torch_dtype=torch_dtype,
-            device_map="auto",
-        )
+    # if args.gold_model_name.startswith("vwxyzjn"):
+    #     # ScalarModel
+    #     scalar_model_config = ScalarModelConfig.from_pretrained(
+    #         args.gold_model_name,
+    #         revision=args.gold_model_revision,
+    #     )
+    #     # hack to remove the path
+    #     # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
+    #     if scalar_model_config.base_model.startswith("models/"):
+    #         original_model = scalar_model_config.base_config["_name_or_path"].split("/")[2]
+    #         sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
+    #         scalar_model_config.base_config["_name_or_path"] = sft_model
+    #         scalar_model_config.base_model = sft_model
+    #         _, seed, _ = args.gold_model_revision.split("__")
+    #         scalar_model_config.base_model_revision = f"sft__{seed}__1708611267"
+    #
+    #     # quantization_config = get_quantization_config(model_config)
+    #     model = ScalarModel.from_pretrained(
+    #         args.gold_model_name,
+    #         revision=args.gold_model_revision,
+    #         config=scalar_model_config,
+    #         torch_dtype=torch_dtype,
+    #         use_flash_attention_2=args.flash_attention,
+    #         device_map="auto",
+    #     )
+    # else:
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.gold_model_name,
+        revision=args.gold_model_revision,
+        torch_dtype=torch_dtype,
+        device_map="auto",
+    )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 
@@ -236,8 +238,16 @@ def evaluate(args, prompts, reference, generations, model_name=None):
         batch_size=args.eval_batch_size,
     )
 
-    ref_outputs = reward_pipeline(reference)
-    ref_rewards = np.array([out["score"] for out in ref_outputs])
+    ref_rewards = []
+    for out in tqdm(
+        reward_pipeline(reference, batch_size=args.eval_batch_size),
+        total=len(reference),
+    ):
+        if isinstance(out, dict):
+            out = [out]
+        ref_rewards.extend([o["score"] for o in out])
+
+    ref_rewards = np.array(ref_rewards)
 
     step = 0
     for step_str, query_response in generations.items():
@@ -282,8 +292,8 @@ def evaluate(args, prompts, reference, generations, model_name=None):
 
 
 def main(generate_args, eval_args):
-    # if generate_args.sanity_check:
-    #     eval_args.wandb_log_id = None
+    if generate_args.sanity_check:
+        eval_args.wandb_log_id = None
 
     print("GENERATING")
     prompts, reference, generations = generate(generate_args)

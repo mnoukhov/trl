@@ -6,8 +6,8 @@ from copy import deepcopy
 
 import generate_and_eval
 import generate_and_llm_judge
+import generate_for_eval
 import hf_generate_and_eval
-import load_and_eval
 import perplexity
 import yaml
 from accelerate.commands import launch
@@ -50,6 +50,13 @@ def run_exp(exp_dict, savedir, args):
     elif exp_name.startswith("newdpo"):
         print("DPO")
         accelerate_launch("dpo.py", exp_dict, args)
+    if exp_name.startswith("genandeval"):
+        print("GENERATE AND EVAL")
+        exp_dict.pop("save_strategy", None)
+        exp_dict["num_gpus"] = args.gpus
+        # python_launch("generate_for_eval.py", exp_dict)
+        exp_dict["dataset_name"] = os.path.join(exp_dict["output_dir"], exp_dict["generated_output_name"])
+        accelerate_launch("load_and_eval.py", exp_dict, args)
     elif exp_name.startswith("elasticdpo"):
         print("Elastic DPO")
         accelerate_launch("elastic_dpo.py", exp_dict, args)
@@ -148,6 +155,20 @@ def accelerate_launch(training_file, training_args_dict, args):
     print(" ".join(training_cmd_args))
     args = parser.parse_args(training_cmd_args)
     launch.launch_command(args)
+
+
+def python_launch(training_file, training_args_dict):
+    training_cmd_args = ["python", training_file]
+    for key, val in training_args_dict.items():
+        training_cmd_args.append(f"--{key}")
+        if isinstance(val, list):
+            training_cmd_args.append(",".join(val))
+        else:
+            training_cmd_args.append(str(val))
+
+    exitcode = os.system(" ".join(training_cmd_args))
+    if exitcode != 0:
+        raise Exception("python launch error")
 
 
 if __name__ == "__main__":

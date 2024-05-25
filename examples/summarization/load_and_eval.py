@@ -4,9 +4,10 @@ from typing import Optional
 
 import numpy as np
 import torch
+from accelerate import PartialState
+from accelerate.utils import gather_object, tqdm
 from datasets import builder, load_from_disk
-from scalar_rm_model import ScalarModel, ScalarModelConfig
-from tqdm.auto import tqdm
+
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -37,7 +38,7 @@ class EvalScriptArguments:
     gold_tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the tokenizer name"})
     flash_attention: Optional[bool] = field(default=False)
     sanity_check: Optional[bool] = field(default=False)
-    eos_token: Optional[bool] = field(default=True)
+    ensure_eos: Optional[bool] = field(default=None)
 
 
 def evaluate(args, prompts, reference, generations, model_name=None):
@@ -66,38 +67,12 @@ def evaluate(args, prompts, reference, generations, model_name=None):
     if not tokenizer.pad_token:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    if args.gold_model_name.startswith("vwxyzjn"):
-        # ScalarModel
-        scalar_model_config = ScalarModelConfig.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-        )
-        # hack to remove the path
-        # models/EleutherAI/pythia-6.9b-deduped/sft_model_55513 -> EleutherAI/pythia-6.9b-deduped
-        if scalar_model_config.base_model.startswith("models/"):
-            original_model = scalar_model_config.base_config["_name_or_path"].split("/")[2]
-            sft_model = f"vwxyzjn/EleutherAI_{original_model}__sft__tldr"
-            scalar_model_config.base_config["_name_or_path"] = sft_model
-            scalar_model_config.base_model = sft_model
-            _, seed, _ = args.gold_model_revision.split("__")
-            scalar_model_config.base_model_revision = f"sft__{seed}__1708611267"
-
-        # quantization_config = get_quantization_config(model_config)
-        model = ScalarModel.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            config=scalar_model_config,
-            torch_dtype=torch_dtype,
-            use_flash_attention_2=args.flash_attention,
-            device_map="auto",
-        )
-    else:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            args.gold_model_name,
-            revision=args.gold_model_revision,
-            torch_dtype=torch_dtype,
-            device_map="auto",
-        )
+    distributed_state = PartialState()
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.gold_model_name,
+        revision=args.gold_model_revision,
+        torch_dtype=torch_dtype,
+    )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 
@@ -105,59 +80,75 @@ def evaluate(args, prompts, reference, generations, model_name=None):
         task="text-classification",
         model=model,
         tokenizer=tokenizer,
-        device_map="auto",
+        device=distributed_state.device,
         function_to_apply="none",
-        batch_size=args.eval_batch_size,
+        # batch_size=args.eval_batch_size,
     )
 
-    ref_outputs = reward_pipeline(reference)
-    ref_rewards = np.array([out["score"] for out in ref_outputs])
+    ref_outputs = []
+    with distributed_state.split_between_processes(reference) as text:
+        for out in tqdm(
+            reward_pipeline(text, batch_size=args.eval_batch_size),
+        ):
+            if isinstance(out, dict):
+                out = [out]
+            ref_outputs.extend([o["score"] for o in out])
 
-    step = 0
-    for step_str, query_response in generations.items():
-        gen_outputs = reward_pipeline(query_response)
-        gen_rewards = np.array([out["score"] for out in gen_outputs])
+    ref_outputs = gather_object(ref_outputs)
 
-        win_rate = (gen_rewards > ref_rewards).mean().item()
-        norm_reward = (gen_rewards - ref_rewards).mean().item()
-        mean_reward = gen_rewards.mean().item()
+    if distributed_state.is_main_process:
+        ref_rewards = np.array(ref_outputs)
 
-        if step_str.startswith("checkpoint-"):
-            step_str = step_str.removeprefix("checkpoint-")
+        step = 0
+        for step_str, query_response in generations.items():
+            gen_outputs = reward_pipeline(query_response)
+            gen_rewards = np.array([out["score"] for out in gen_outputs])
 
-        if step_str.isdigit():
-            step = int(step_str)
-        else:
-            print(f"Warning step name {step_str} is not an integer")
-            step = step + 1
+            win_rate = (gen_rewards > ref_rewards).mean().item()
+            norm_reward = (gen_rewards - ref_rewards).mean().item()
+            mean_reward = gen_rewards.mean().item()
 
-        if log_to_wandb:
-            num_samples = 32
-            sample_generations = wandb.Table(
-                columns=["Prompt", "Policy", "Reference"],
-                rows=[
-                    [prompt, pol[len(prompt) :], ref[len(prompt) :]]
-                    for prompt, pol, ref in zip(
-                        prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
-                    )
-                ],
-            )
-            wandb.log(
-                {
-                    "gold/hf_win_rate": win_rate,
-                    "gold/hf_norm_reward": norm_reward,
-                    "gold/hf_reward": mean_reward,
-                    "gold/hf_samples": sample_generations,
-                    "train/global_step": step,
-                },
-            )
+            if step_str.startswith("checkpoint-"):
+                step_str = step_str.removeprefix("checkpoint-")
 
-        print(f"step {step}: reward {mean_reward} win-rate {win_rate} norm-reward {norm_reward}")
+            if step_str.isdigit():
+                step = int(step_str)
+            else:
+                print(f"Warning step name {step_str} is not an integer")
+                step = step + 1
+
+            if log_to_wandb:
+                num_samples = 32
+                # sample_generations = wandb.Table(
+                #     columns=["Prompt", "Policy", "Reference"],
+                #     rows=[
+                #         [prompt, pol[len(prompt) :], ref[len(prompt) :]]
+                #         for prompt, pol, ref in zip(
+                #             prompts[:num_samples], query_response[:num_samples], reference[:num_samples]
+                #         )
+                #     ],
+                # )
+                wandb.log(
+                    {
+                        "gold/hf_win_rate": win_rate,
+                        "gold/hf_norm_reward": norm_reward,
+                        "gold/hf_reward": mean_reward,
+                        # "gold/hf_samples": sample_generations,
+                        "train/global_step": step,
+                    },
+                )
+
+            print(f"step {step}: reward {mean_reward} win-rate {win_rate} norm-reward {norm_reward}")
 
 
 def main(args):
     print("LOADING GENERATED")
     dataset = load_from_disk(args.dataset_name)
+
+    # TODO
+    # pieces = args.dataset_name.split("/")
+    # assert pieces[4] == "results"
+    # args.wandb_log_id = pieces[5]
 
     if args.sanity_check:
         dataset = dataset.select(range(100))
@@ -165,18 +156,19 @@ def main(args):
 
     generated_col = dataset.column_names[-1]
 
-    eos_token = "<|endoftext|>"
+    if args.ensure_eos is not None:
+        eos_token = "<|endoftext|>"
 
-    def ensure_eos_or_not(example):
-        for column_name in ["query_reference_response", generated_col]:
-            if args.eos_token and not example[column_name].endswith(eos_token):
-                example[column_name] = example[column_name] + eos_token
-            elif not args.eos_token:
-                example[column_name] = example[column_name].removesuffix(eos_token)
+        def ensure_eos_or_not(example):
+            for column_name in ["query_reference_response", generated_col]:
+                if args.ensure_eos and not example[column_name].endswith(eos_token):
+                    example[column_name] = example[column_name] + eos_token
+                elif not args.ensure_os:
+                    example[column_name] = example[column_name].removesuffix(eos_token)
 
-        return example
+            return example
 
-    dataset = dataset.map(ensure_eos_or_not)
+        dataset = dataset.map(ensure_eos_or_not)
 
     prompts = dataset["query"]
     reference = dataset["query_reference_response"]
@@ -190,11 +182,11 @@ def main(args):
 
 def main_args_dict(args_dict):
     parser = HfArgumentParser([EvalScriptArguments])
-    args = parser.parse_dict(args_dict)
+    args = parser.parse_dict(args_dict, allow_extra_keys=True)
     main(args)
 
 
 if __name__ == "__main__":
     parser = HfArgumentParser([EvalScriptArguments])
-    args = parser.parse_args_into_dataclasses()[0]
+    args = parser.parse_args_into_dataclasses(return_remaining_strings=True)[0]
     main(args)
