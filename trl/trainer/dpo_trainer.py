@@ -527,7 +527,7 @@ class DPOTrainer(Trainer):
         all_logps = self._get_batch_logps(
             all_logits,
             concatenated_batch["concatenated_labels"],
-            average_log_prob=(self.loss_type == "ipo"),
+            average_log_prob=False,
         )
 
         chosen_logps = all_logps[:len_chosen]
