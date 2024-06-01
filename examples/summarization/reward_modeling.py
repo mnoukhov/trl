@@ -1,33 +1,3 @@
-# Copyright 2023 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""
-python examples/scripts/reward_modeling.py \
-    --model_name_or_path=facebook/opt-350m \
-    --output_dir="reward_modeling_anthropic_hh" \
-    --per_device_train_batch_size=64 \
-    --num_train_epochs=1 \
-    --gradient_accumulation_steps=16 \
-    --gradient_checkpointing=True \
-    --learning_rate=1.41e-5 \
-    --report_to="wandb" \
-    --remove_unused_columns=False \
-    --optim="adamw_torch" \
-    --logging_steps=10 \
-    --evaluation_strategy="steps" \
-    --max_length=512 \
-"""
-
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -38,6 +8,7 @@ from datasets import DatasetDict, load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, HfArgumentParser
+from accelerate import PartialState
 
 from trl import ModelConfig, RewardConfig, RewardTrainer
 
@@ -210,6 +181,11 @@ if __name__ == "__main__":
     if script_args.mode == "train":
         trainer.train()
         trainer.save_model(reward_config.output_dir)
+        if PartialState().is_main_process and model_config.use_peft:
+            merged_model_name = reward_config.hub_model_id + "_merged"
+            model = trainer.model.merge_and_unload()
+            model.push_to_hub(merged_model_name)
+            tokenizer.push_to_hub(merged_model_name)
     elif script_args.mode == "eval":
         results = trainer.evaluate()
         print(results)
