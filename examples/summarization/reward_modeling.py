@@ -4,11 +4,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import torch
+from accelerate import PartialState
 from datasets import DatasetDict, load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, HfArgumentParser
-from accelerate import PartialState
 
 from trl import ModelConfig, RewardConfig, RewardTrainer
 
