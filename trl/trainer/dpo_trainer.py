@@ -586,7 +586,7 @@ class DPOTrainer(Trainer):
                 "chosen_rewards": chosen_rewards,
                 "rejected_rewards": rejected_rewards,
                 "policy_chosen_logps": policy_chosen_logps.detach(),
-                "policy_rejected_logps": policy_chosen_logps.detach(),
+                "policy_rejected_logps": policy_rejected_logps.detach(),
                 "reference_chosen_logps": reference_chosen_logps.detach(),
                 "reference_rejected_logps": reference_rejected_logps.detach(),
             }

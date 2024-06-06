@@ -357,11 +357,11 @@ class DPODataCollatorWithPadding:
             rejected_tokens["attention_mask"] = new_attention_mask_r
 
             # add EOS token to end of prompt
-            chosen_tokens["input_ids"].append(self.tokenizer.eos_token_id)
-            chosen_tokens["attention_mask"].append(1)
-
-            rejected_tokens["input_ids"].append(self.tokenizer.eos_token_id)
-            rejected_tokens["attention_mask"].append(1)
+            # chosen_tokens["input_ids"].append(self.tokenizer.eos_token_id)
+            # chosen_tokens["attention_mask"].append(1)
+            #
+            # rejected_tokens["input_ids"].append(self.tokenizer.eos_token_id)
+            # rejected_tokens["attention_mask"].append(1)
 
             longer_response_length = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
 
