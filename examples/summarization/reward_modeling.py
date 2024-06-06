@@ -110,7 +110,7 @@ def tldr_relabel_dataset(dataset, pred_chosen, pred_rejected):
 if __name__ == "__main__":
     parser = HfArgumentParser((RewardScriptArguments, RewardConfig, ModelConfig))
     script_args, reward_config, model_config = parser.parse_args_into_dataclasses()
-    # reward_config.gradient_checkpointing_kwargs = dict(use_reentrant=False)
+    reward_config.gradient_checkpointing_kwargs = dict(use_reentrant=False)
 
     ################
     # Model & Tokenizer

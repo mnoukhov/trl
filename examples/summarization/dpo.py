@@ -95,8 +95,8 @@ if __name__ == "__main__":
     eval_dataset = load_dataset(eval_dataset_name, split=args.dataset_eval_split)
 
     if args.sanity_check:
-        train_dataset = train_dataset.select(range(128))
-        eval_dataset = eval_dataset.select(range(128))
+        train_dataset = train_dataset.select(range(16))
+        eval_dataset = eval_dataset.select(range(16))
         training_args.push_to_hub = False
         # training_args.hub_model_id = None
 

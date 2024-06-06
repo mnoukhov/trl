@@ -16,29 +16,38 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 
-import bitsandbytes as bnb
 import torch
-from accelerate import Accelerator
 from datasets import DatasetDict, builder, load_dataset
-from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-from peft.tuners.lora import LoraLayer
+from peft import LoraConfig
 from torch import nn
 from tqdm import tqdm
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
-    BitsAndBytesConfig,
     HfArgumentParser,
     PreTrainedTokenizerBase,
     TrainingArguments,
 )
 
-from trl import RewardTrainer
+from trl import ModelConfig, RewardTrainer
 
 
 tqdm.pandas()
 builder.has_sufficient_disk_space = lambda needed_bytes, directory=".": True
+
+
 # torch.autograd.set_detect_anomaly(True)
+@dataclass
+class RewardScriptArguments:
+    mode: str = field(default="train", metadata={"help": "the dataset name"})
+    dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
+    dataset_train_split: str = field(default="train", metadata={"help": "the name of the training set of the dataset"})
+    dataset_eval_split: str = field(default="test", metadata={"help": "the name of the training set of the dataset"})
+    tokenizer_name: Optional[str] = field(default=None, metadata={"help": "the dataset name"})
+    sanity_check: bool = field(default=False, metadata={"help": "only train on 1000 samples"})
+    output_dataset_name: str = field(default=None, metadata={"help": "the dataset name"})
+    max_length: int = field(default=512)
+
 
 ### fix from https://github.com/huggingface/trl/issues/274
 
@@ -134,261 +143,71 @@ class GPTRewardDataCollatorWithPadding:
         return batch
 
 
-# Define and parse arguments.
-@dataclass
-class ScriptArguments:
-    """
-    The name of the Casual LM model we wish to fine with RewardTrainer
-    """
+def get_peft_config(model_config: ModelConfig):
+    if model_config.use_peft is False:
+        return None
 
-    model_name: Optional[str] = field(
-        default="/home/toolkit/huggingface/tldr_sft_pythia7b", metadata={"help": "the model name"}
-    )
-    dataset_name: Optional[str] = field(
-        default="mnoukhov/openai_summarize_comparisons_tldrprompt", metadata={"help": "the dataset name"}
-    )
-    dataset_text_field: Optional[str] = field(default="prompt", metadata={"help": "the text field of the dataset"})
-    log_with: Optional[str] = field(default=None, metadata={"help": "use 'wandb' to log with wandb"})
-    logging_steps: Optional[int] = field(default=100, metadata={"help": "the number of update steps between two logs"})
-    train_split: Optional[str] = field(
-        default="train", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
-    )
-    eval_split: Optional[str] = field(
-        default="test[:5000]", metadata={"help": "the dataset split to evaluate on; default to 'none' (no evaluation)"}
-    )
-    learning_rate: Optional[float] = field(default=1e-5, metadata={"help": "the learning rate"})
-    weight_decay: Optional[float] = field(default=0.001)
-    num_warmup_steps: Optional[int] = field(default=100)
-    lr_scheduler_type: Optional[str] = field(default="cosine")
-    optimizer_type: Optional[str] = field(default="adamw_torch", metadata={"help": "the optimizer type"})
-    per_device_train_batch_size: Optional[int] = field(default=2, metadata={"help": "the per device train batch size"})
-    per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "the per device eval batch size"})
-    num_train_epochs: Optional[int] = field(default=1, metadata={"help": "the number of training epochs"})
-    seq_length: Optional[int] = field(default=560, metadata={"help": "Input sequence length"})
-    gradient_accumulation_steps: Optional[int] = field(
-        default=16, metadata={"help": "the number of gradient accumulation steps"}
-    )
-    bf16: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": "This essentially cuts the training time in half if you want to sacrifice a little precision and have a supported GPU."
-        },
-    )
-    fp16: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": "This essentially cuts the training time in half if you want to sacrifice a little precision and have a supported GPU."
-        },
-    )
-    fp16_model: Optional[bool] = field(
-        default=False,
-        metadata={},
-    )
-    load_in_8bit: Optional[bool] = field(default=False, metadata={"help": "load the model in 8 bits precision"})
-    load_in_4bit: Optional[bool] = field(default=False, metadata={"help": "load the model in 4 bits precision"})
-    use_lora: Optional[bool] = field(
-        default=True,
-    )
-    lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
-    lora_dropout: Optional[float] = field(default=0.05, metadata={"help": "the lora dropout parameter"})
-    lora_r: Optional[int] = field(default=8, metadata={"help": "the lora r parameter"})
-    lora_all_linear: Optional[bool] = field(default=False, metadata={"help": "lora adapter on all linear layers"})
-    trust_remote_code: Optional[bool] = field(default=True, metadata={"help": "Enable `trust_remote_code`"})
-    output_dir: Optional[str] = field(default="results", metadata={"help": "the output directory"})
-    gradient_checkpointing: Optional[bool] = field(
-        default=False,
-        metadata={"help": "Enables gradient checkpointing."},
-    )
-    mode: Optional[str] = field(default="train")
-    eval_steps: Optional[float] = field(default=None)
-    pretrained_adapter: Optional[str] = field(default=None)
-    padding: Optional[str] = field(
-        default="max_length", metadata={"help": "padding to use for preprocessing the dataset"}
-    )
-    save_strategy: Optional[str] = field(default="steps")
+    target_modules = model_config.lora_target_modules if model_config.lora_target_modules is not None else "all-linear"
 
-
-def find_all_linear_names(args, model):
-    cls = bnb.nn.Linear4bit if args.load_in_4bit else (bnb.nn.Linear8bitLt if args.load_in_8bit else torch.nn.Linear)
-    lora_module_names = set()
-    for name, module in model.named_modules():
-        if isinstance(module, cls):
-            names = name.split(".")
-            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
-
-    if "lm_head" in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove("lm_head")
-
-    if "score" in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove("score")
-
-    return list(lora_module_names)
-
-
-def create_and_prepare_model(args):
-    if args.load_in_8bit and args.load_in_4bit:
-        raise ValueError("You can't load the model in 8 bits and 4 bits at the same time")
-    elif args.load_in_8bit or args.load_in_4bit:
-        quantization_config = BitsAndBytesConfig(load_in_8bit=args.load_in_8bit, load_in_4bit=args.load_in_4bit)
-        device_map = {"": Accelerator().local_process_index}
-    else:
-        device_map = None
-        quantization_config = None
-
-    if args.bf16:
-        torch_dtype = torch.bfloat16
-    elif args.fp16_model:
-        torch_dtype = torch.float16
-    else:
-        torch_dtype = torch.float32
-
-    model = AutoModelForSequenceClassification.from_pretrained(
-        args.model_name,
-        quantization_config=quantization_config,
-        device_map=device_map,
-        num_labels=1,
-        torch_dtype=torch_dtype,
+    peft_config = LoraConfig(
+        r=model_config.lora_r,
+        lora_alpha=model_config.lora_alpha,
+        lora_dropout=model_config.lora_dropout,
+        bias="none",
+        task_type=model_config.lora_task_type,
+        target_modules=target_modules,
+        modules_to_save=model_config.lora_modules_to_save,
     )
 
-    model.config.torch_dtype = torch_dtype
-    model.config.use_cache = not args.gradient_checkpointing
-
-    # if script_args.ignore_bias_buffers:
-    # torch distributed hack
-    if quantization_config is not None:
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
-        args.gradient_checkpointing = False
-
-    if args.use_lora:
-        # we add `score` to the list of modules to save to
-        # correctly save the score head.
-        if args.pretrained_adapter is not None:
-            model = PeftModel.from_pretrained(model, args.pretrained_adapter)
-        else:
-            if args.lora_all_linear:
-                target_modules = find_all_linear_names(args, model)
-            else:
-                target_modules = None
-
-            peft_config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type="SEQ_CLS",
-                target_modules=target_modules,
-                modules_to_save=["score"],
-            )
-
-            model = get_peft_model(model, peft_config)
-
-        modules_to_save = ["score"]
-        for key, _ in model.named_modules():
-            target_module_found = any(key.endswith(target_key) for target_key in modules_to_save)
-            if target_module_found:
-                model.get_submodule(key + ".original_module").requires_grad_(False)
-
-        if torch_dtype == torch.bfloat16:
-            for name, module in model.named_modules():
-                if isinstance(module, LoraLayer):
-                    module = module.to(torch_dtype)
-                if "norm" in name:
-                    module = module.to(torch.float32)
-                if "score" in name or "embed_tokens" in name:
-                    if hasattr(module, "weight") and module.weight.dtype == torch.float32:
-                        module = module.to(torch_dtype)
-
-    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
-    if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if getattr(model.config, "pad_token_id", None) is None:
-        model.config.pad_token_id = model.config.eos_token_id
-
-    return model, tokenizer
+    return peft_config
 
 
-def prepare_dataset(args, dataset, tokenizer, num_proc=2):
-    # def summary_filter(example):
-    #     return (example["chosen"] != example["rejected"]) and (
-    #         len(example["chosen"].split()) >= 5 or len(example["rejected"].split()) >= 5
-    #     )
-    #
-    # pre_filter = len(dataset)
-    # dataset = dataset.filter(summary_filter)
-    # print(f"filtered {pre_filter - len(dataset)} samples from {split}")
-    original_columns = dataset.column_names
+def tldr_preprocess_function(examples):
+    new_examples = {
+        "input_ids_chosen": [],
+        "attention_mask_chosen": [],
+        "input_ids_rejected": [],
+        "attention_mask_rejected": [],
+    }
+    for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+        tokenized_chosen = tokenizer(prompt + chosen)
+        tokenized_rejected = tokenizer(prompt + rejected)
 
-    def preprocess_function(examples):
-        new_examples = {
-            "input_ids_chosen": [],
-            "attention_mask_chosen": [],
-            "input_ids_rejected": [],
-            "attention_mask_rejected": [],
-        }
-        for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
-            tokenized_chosen = tokenizer(
-                prompt + " " + chosen, padding=args.padding, truncation=True, max_length=script_args.seq_length
-            )
-            tokenized_rejected = tokenizer(
-                prompt + " " + rejected, padding=args.padding, truncation=True, max_length=script_args.seq_length
-            )
-            new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
-            new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
-            new_examples["input_ids_rejected"].append(tokenized_rejected["input_ids"])
-            new_examples["attention_mask_rejected"].append(tokenized_rejected["attention_mask"])
+        new_examples["input_ids_chosen"].append(tokenized_chosen["input_ids"])
+        new_examples["attention_mask_chosen"].append(tokenized_chosen["attention_mask"])
+        new_examples["input_ids_rejected"].append(tokenized_rejected["input_ids"])
+        new_examples["attention_mask_rejected"].append(tokenized_rejected["attention_mask"])
 
-        return new_examples
-
-    dataset = dataset.map(preprocess_function, batched=True, num_proc=num_proc, remove_columns=original_columns)
-
-    return dataset
+    return new_examples
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser(ScriptArguments)
-    script_args = parser.parse_args_into_dataclasses()[0]
+    parser = HfArgumentParser((RewardScriptArguments, TrainingArguments, ModelConfig))
+    script_args, training_args, model_config = parser.parse_args_into_dataclasses()
 
-    model, tokenizer = create_and_prepare_model(script_args)
-    if script_args.mode != "eval":
-        train_data = load_dataset(script_args.dataset_name, split=script_args.train_split)
-        train_dataset = prepare_dataset(script_args, train_data, tokenizer)
-    else:
-        train_dataset = None
-
-    if script_args.eval_split is not None and script_args.eval_split != "None":
-        eval_data = load_dataset(script_args.dataset_name, split=script_args.eval_split)
-        eval_dataset = prepare_dataset(script_args, eval_data, tokenizer)
-    else:
-        eval_dataset = None
-
-    # don't include gradient_checkpointing here, see trl#728
-    training_args = TrainingArguments(
-        output_dir=script_args.output_dir,
-        per_device_train_batch_size=script_args.per_device_train_batch_size,
-        per_device_eval_batch_size=script_args.per_device_eval_batch_size,
-        bf16=script_args.bf16,
-        fp16=script_args.fp16,
-        num_train_epochs=script_args.num_train_epochs,
-        gradient_accumulation_steps=script_args.gradient_accumulation_steps,
-        learning_rate=script_args.learning_rate,
-        report_to=script_args.log_with,
-        remove_unused_columns=False,
-        lr_scheduler_type=script_args.lr_scheduler_type,
-        weight_decay=script_args.weight_decay,
-        optim=script_args.optimizer_type,
-        warmup_steps=script_args.num_warmup_steps,
-        logging_steps=script_args.logging_steps,
-        evaluation_strategy=("steps" if script_args.eval_steps is not None else "epoch"),
-        eval_steps=script_args.eval_steps,
-        save_strategy="epoch",
-        gradient_checkpointing=script_args.gradient_checkpointing,
-        ddp_find_unused_parameters=False,
+    model_kwargs = dict(
+        revision=model_config.model_revision,
+        trust_remote_code=model_config.trust_remote_code,
+    )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_config.model_name_or_path, num_labels=1, **model_kwargs
     )
 
-    data_collator = GPTRewardDataCollatorWithPadding(
-        tokenizer, max_length=script_args.seq_length, pad_to_multiple_of=8
+    model_name = model_config.model_name_or_path
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    raw_datasets = load_dataset(script_args.dataset_name)
+    if script_args.sanity_check:
+        for key in raw_datasets:
+            raw_datasets[key] = raw_datasets[key].select(range(100))
+    raw_datasets = raw_datasets.map(
+        tldr_preprocess_function,
+        batched=True,
     )
+
+    train_dataset = raw_datasets[script_args.dataset_train_split] if script_args.mode != "eval" else None
+    eval_dataset = raw_datasets[script_args.dataset_eval_split] if script_args.dataset_eval_split else None
+
+    data_collator = GPTRewardDataCollatorWithPadding(tokenizer, max_length=script_args.max_length)
 
     trainer = GPTRewardTrainer(
         model=model,
@@ -396,8 +215,9 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        max_length=script_args.seq_length,
+        max_length=script_args.max_length,
         data_collator=data_collator,
+        peft_config=get_peft_config(model_config),
     )
 
     if script_args.mode == "train":
@@ -463,7 +283,7 @@ if __name__ == "__main__":
 
                 dataset = dataset.map(relabel_with_preds, batched=True)
 
-                dataset._info.description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
+                dataset._info.description = f"{script_args.dataset_name} relabelled with {model_name}"
                 relabel_dataset[split] = dataset
 
         if trainer.accelerator.is_local_main_process:
@@ -484,11 +304,11 @@ if __name__ == "__main__":
                 print("Relabelling Dataset and Saving")
                 ds_split = script_args.train_split if split == "train" else script_args.eval_split
                 dataset = load_dataset(script_args.dataset_name, split=ds_split)
-                model_basename = script_args.model_name.rsplit("/", 1)[-1]
+                model_basename = model_name.rsplit("/", 1)[-1]
                 dataset = dataset.add_column(f"pred_chosen_{model_basename}", preds[:, 0])
                 dataset = dataset.add_column(f"pred_rejected_{model_basename}", preds[:, 1])
 
-                dataset._info.description = f"{script_args.dataset_name} relabelled with {script_args.model_name}"
+                dataset._info.description = f"{script_args.dataset_name} relabelled with {model_name}"
                 relabel_dataset[split] = dataset
 
         if trainer.accelerator.is_local_main_process:

@@ -1,7 +1,7 @@
-sanity_check: True
+# sanity_check: True
 model_name_or_path: /home/toolkit/trl/results/fcdf36eaa636e81435d429e1ec6cef34/output
 wandb_log_id: model_path
-model_paths: [checkpoint-291]
+# model_paths: [checkpoint-291]
 generated_output_name: _generated_dataset
 # model_paths: .
 # base_model_name: mnoukhov/pythia410m-sft-tldr

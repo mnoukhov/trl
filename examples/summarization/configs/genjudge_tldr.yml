@@ -1,8 +1,8 @@
 # model_name_or_path: /home/toolkit/trl/results/a805570edd5eddcfb7deb3a583d7b4c2
 # wandb_log_id: a805570edd5eddcfb7deb3a583d7b4c2
-model_name_or_path: /home/toolkit/trl/results/26eb19659f00603a0372a843331512b1/output
+model_name_or_path: /home/toolkit/trl/results/fcdf36eaa636e81435d429e1ec6cef34/output
 wandb_log_id: model_path
-model_paths: .
+# model_paths: [checkpoint-1164]
 # base_model_name: mnoukhov/pythia410m-sft-tldr
 # tokenizer_name: mnoukhov/pythia410m-sft-tldr
 # wandb_log_id: cfb3179a6dd00a0d09b55fc900877f5b

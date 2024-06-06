@@ -1,9 +1,10 @@
 task_type: "tldr"
-hub_model_id: "mnoukhov/pythia410m-dpo-tldr-full"
+# hub_model_id: "mnoukhov/pythia410m-dpo-tldr-full"
+push_to_hub: False
 model_name: "mnoukhov/pythia410m-sft-tldr"
 dataset_name: mnoukhov/summarize_from_feedback_oai_preprocessing_1706381144_relabel_pythia1b
 dataset_eval_split: validation
-learning_rate: 1e-5
+learning_rate: 1e-6
 lr_scheduler_type: cosine
 fp16: True
 gradient_accumulation_steps: 4
@@ -15,7 +16,8 @@ max_prompt_length: 512
 max_target_length: 128
 beta: 0.05
 ## peft
-# use_peft: False
+# loss_type: ipo
+use_peft: False
 # lora_r: 16
 # lora_alpha: 32
 # lora_dropout: 0.
